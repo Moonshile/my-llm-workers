@@ -2,12 +2,36 @@
 
 自动调度器，扫描所有工具目录的 `worker.yaml`，按 cron 表达式定期执行。
 
+启动后显示 curses 仪表盘（类似 `top` 命令），实时展示 worker 状态和事件日志。
+
 ## 运行
 
-在项目根目录执行：
-
 ```bash
-uv run python scheduler/main.py
+make run                         # 从项目根目录启动
+uv run python scheduler/main.py # 或直接运行
+```
+
+按 `q` 退出仪表盘。
+
+## 仪表盘界面
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  My LLM Workers Scheduler                2026-06-03 15:47:22  │
+│  Workers: 2 | Uptime: 01:23:45                               │
+├──────────────────────────────────────────────────────────────┤
+│  Name              Cron        Next Run  Last Run  Status    │
+│  ────────────────  ──────────  ────────  ────────  ─────     │
+│  example-worker    0 9 * * *   09:00     09:00     ✓        │
+│  another           */5 * * * * 15:50     15:45     ✗        │
+├──────────────────────────────────────────────────────────────┤
+│  Event Log                                                   │
+│  15:45:01  example-worker        completed successfully      │
+│  15:45:00  example-worker        → running                   │
+│  15:30:00  -                     scheduler started with 2    │
+├──────────────────────────────────────────────────────────────┤
+│  q: quit  r: refresh                                         │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## 行为
@@ -17,3 +41,5 @@ uv run python scheduler/main.py
 - 只调度 `schedule.enabled: true` 的工具
 - 每个工具执行超时 1 小时
 - 工具执行失败不影响其他工具
+- 执行日志写入各工具 `logs/` 目录
+- 仪表盘事件日志保留最近 200 条
