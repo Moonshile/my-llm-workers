@@ -1,0 +1,7 @@
+name: my-worker
+description: 一句话描述工具用途
+language: python
+schedule:
+  enabled: false
+  cron: "0 9 * * *"
+run: "python main.py"
