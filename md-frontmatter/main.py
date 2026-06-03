@@ -18,6 +18,7 @@ import logging
 import re
 import urllib.request
 import urllib.error
+import yaml
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -29,7 +30,7 @@ TOOL_DIR = Path(__file__).resolve().parent
 
 # ---------- 日志 ----------
 
-def setup_logging() -> logging.Logger:
+def setup_logging(backup_count: int = 7) -> logging.Logger:
     """配置日志：控制台(INFO) + run.log(INFO) + debug.log(DEBUG)，均每日轮转。"""
     log_dir = TOOL_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -47,7 +48,7 @@ def setup_logging() -> logging.Logger:
     # run.log：INFO（重要事件）
     fh = TimedRotatingFileHandler(
         filename=log_dir / "run.log",
-        when="midnight", interval=1, backupCount=30, encoding="utf-8",
+        when="midnight", interval=1, backupCount=backup_count, encoding="utf-8",
     )
     fh.setLevel(logging.INFO)
     fh.setFormatter(fmt)
@@ -56,7 +57,7 @@ def setup_logging() -> logging.Logger:
     # debug.log：DEBUG（含 SKIP 等细节）
     dh = TimedRotatingFileHandler(
         filename=log_dir / "debug.log",
-        when="midnight", interval=1, backupCount=30, encoding="utf-8",
+        when="midnight", interval=1, backupCount=backup_count, encoding="utf-8",
     )
     dh.setLevel(logging.DEBUG)
     dh.setFormatter(fmt)
@@ -371,6 +372,17 @@ def process_directory(dir_path: Path, config: dict, log: logging.Logger, dry_run
     return counts
 
 
+# ---------- worker.yaml 配置 ----------
+
+def load_worker_config() -> dict:
+    """从 worker.yaml 读取运行参数（如日志保留天数）。"""
+    worker_yaml = TOOL_DIR / "worker.yaml"
+    if worker_yaml.exists():
+        with open(worker_yaml) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
 # ---------- 主逻辑 ----------
 
 def main():
@@ -392,7 +404,9 @@ def main():
 
     args = parser.parse_args()
 
-    log = setup_logging()
+    worker_cfg = load_worker_config()
+    log_retention = worker_cfg.get("log_retention_days", 7)
+    log = setup_logging(backup_count=log_retention)
 
     # 加载配置
     config = get_config()
