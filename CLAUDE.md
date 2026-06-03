@@ -8,9 +8,21 @@
 
 - 每个工具目录必须包含 `worker.yaml` 和 `README.md`
 - 工具目录命名用 kebab-case
-- 调度器在 `scheduler/` 目录
+- 调度器在 `scheduler/` 目录，提供 curses 仪表盘（类似 `top`），`make run` 启动
+- `make test` 运行全部测试
 - `_template/` 是新工具模板，不会被调度器扫描（下划线开头的目录跳过）
 - worker.yaml 中 `schedule.enabled: false` 表示手动运行的工具，调度器忽略
+
+## 开发要求
+
+- 每个工具应包含 `test_main.py`，使用 pytest 编写单元测试
+- 测试覆盖：纯函数 + API mock + 集成测试（临时文件目录）
+- 测试中需 mock `load_dotenv`（`mock.patch("main.load_dotenv")`），禁止在测试中触碰真实 `.env` 文件
+- 每个工具应将 LLM 配置放在 `.env` 文件中，不放在 `worker.yaml` 中
+- 需提供 `.env.example` 作为配置模板，`.env` 已被 `.gitignore` 忽略
+- 执行日志使用 `TimedRotatingFileHandler`，存放在各工具目录下的 `logs/` 中，按天轮转保留 30 天
+  - `run.log`：INFO 级别，记录关键事件（处理/错误/汇总）
+  - `debug.log`：DEBUG 级别，含 SKIP 等细节，用于排查
 
 ## 依赖管理
 
