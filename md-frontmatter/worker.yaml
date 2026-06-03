@@ -1,0 +1,7 @@
+name: md-frontmatter
+description: 为指定目录下的所有 .md 文件递归添加 YAML frontmatter 元数据（LLM 生成 title/date/tags）
+language: python
+schedule:
+  enabled: true
+  cron: "* * * * *"
+run: "python main.py"
