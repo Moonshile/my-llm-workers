@@ -94,11 +94,20 @@ def get_config() -> dict:
     if watch_paths_raw:
         watch_paths = [os.path.expanduser(p.strip()) for p in watch_paths_raw.split(",") if p.strip()]
 
+    # 最短内容长度（低于此值跳过，防止不完整的文件过早打标）
+    min_content_length = int(os.environ.get("MIN_CONTENT_LENGTH", "200"))
+
+    # 草稿标记（逗号分隔，文件头部包含任一标记则跳过）
+    draft_markers_raw = os.environ.get("DRAFT_MARKERS", "<!-- draft -->,<!-- wip -->")
+    draft_markers = [m.strip() for m in draft_markers_raw.split(",") if m.strip()]
+
     return {
         "api_base": api_base,
         "api_key": api_key,
         "model": model,
         "watch_paths": watch_paths,
+        "min_content_length": min_content_length,
+        "draft_markers": draft_markers,
     }
 
 
@@ -115,6 +124,38 @@ def has_frontmatter(content: str) -> bool:
     for i in range(1, len(lines)):
         if lines[i].strip() == "---":
             return True
+    return False
+
+
+# ---------- 草稿检测 ----------
+
+def has_draft_marker(content: str, markers: list[str]) -> bool:
+    """检查内容开头是否包含草稿标记（如 <!-- draft -->、<!-- wip -->）。"""
+    head = content[:500]
+    head_lower = head.lower()
+    for marker in markers:
+        if marker.lower() in head_lower:
+            return True
+    return False
+
+
+# ---------- frontmatter 标签检测 ----------
+
+def frontmatter_missing_tags(content: str) -> bool:
+    """检查已有 frontmatter 中 tags 字段是否缺失或为空。"""
+    if not has_frontmatter(content):
+        return False
+    m = re.match(r"^---\r?\n(.*?)\r?\n---", content.strip(), re.DOTALL)
+    if not m:
+        return False
+    fm_block = m.group(1)
+    tags_match = re.search(r"^tags:\s*(.+)$", fm_block, re.MULTILINE)
+    if not tags_match:
+        return True  # 完全没有 tags 行
+    tags_val = tags_match.group(1).strip()
+    # 匹配 []、[ ] 等空列表
+    if re.match(r"^\[\s*\]$", tags_val):
+        return True
     return False
 
 
@@ -246,6 +287,9 @@ def process_directory(dir_path: Path, config: dict, log: logging.Logger, dry_run
         log.warning("  跳过不存在的目录: %s", dir_path)
         return {"processed": 0, "skipped": 0, "updated": 0, "errors": 0}
 
+    min_content_length = config.get("min_content_length", 200)
+    draft_markers = config.get("draft_markers", ["<!-- draft -->", "<!-- wip -->"])
+
     md_files = sorted(dir_path.rglob("*.md"))
     log.info("扫描目录: %s", dir_path)
     log.info("找到 %d 个 .md 文件", len(md_files))
@@ -267,12 +311,28 @@ def process_directory(dir_path: Path, config: dict, log: logging.Logger, dry_run
             counts["skipped"] += 1
             continue
 
+        # 内容过短：防止不完整的文件过早打标
+        content_len = len(content.strip())
+        if content_len < min_content_length:
+            log.debug("  SKIP  %s (内容过短: %d chars < %d)", rel_path, content_len, min_content_length)
+            counts["skipped"] += 1
+            continue
+
+        # 草稿标记：<!-- draft --> 或 <!-- wip -->
+        if draft_markers and has_draft_marker(content, draft_markers):
+            log.debug("  SKIP  %s (草稿标记)", rel_path)
+            counts["skipped"] += 1
+            continue
+
         already_has = has_frontmatter(content)
 
         if already_has and not update:
-            log.debug("  SKIP  %s (已有 frontmatter)", rel_path)
-            counts["skipped"] += 1
-            continue
+            # 已有 frontmatter 但缺少 tags → 强制触发更新
+            if not frontmatter_missing_tags(content):
+                log.debug("  SKIP  %s (已有 frontmatter)", rel_path)
+                counts["skipped"] += 1
+                continue
+            log.info("  TAGS  %s (frontmatter 缺少 tags)", rel_path)
 
         action = "UPDT" if already_has else "PROC"
         log.info("  %s  %s", action, rel_path)

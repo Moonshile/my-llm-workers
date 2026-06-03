@@ -35,6 +35,56 @@ def test_has_frontmatter(content, expected):
 
 
 # ============================================================
+# has_draft_marker
+# ============================================================
+
+@pytest.mark.parametrize("content,markers,expected", [
+    # 头部有 <!-- draft --> 标记
+    ("<!-- draft -->\n# 标题\n\n内容", ["<!-- draft -->"], True),
+    # 头部有 <!-- wip --> 标记
+    ("<!-- wip -->\n\n# 标题", ["<!-- wip -->"], True),
+    # 多个标记，命中第二个
+    ("正文内容 <!-- wip --> 继续", ["<!-- draft -->", "<!-- wip -->"], True),
+    # 没有标记
+    ("# 标题\n\n正常内容", ["<!-- draft -->"], False),
+    # 标记在 500 字符之后（不应检测到）
+    ("x" * 501 + "<!-- draft -->", ["<!-- draft -->"], False),
+    # 大小写不敏感
+    ("<!-- DRAFT -->\n# 标题", ["<!-- draft -->"], True),
+    # 空标记列表
+    ("<!-- draft -->\n内容", [], False),
+    # 无标记字符串
+    ("正常文章内容", ["<!-- draft -->", "<!-- wip -->"], False),
+])
+def test_has_draft_marker(content, markers, expected):
+    assert fm.has_draft_marker(content, markers) == expected
+
+
+# ============================================================
+# frontmatter_missing_tags
+# ============================================================
+
+@pytest.mark.parametrize("content,expected", [
+    # tags 存在且有值
+    ("---\ntitle: x\ndate: 2026-01-01\ntags: [a, b]\n---\n\n正文", False),
+    # tags 为空列表
+    ("---\ntitle: x\ndate: 2026-01-01\ntags: []\n---\n\n正文", True),
+    # 完全没有 tags 字段
+    ("---\ntitle: x\ndate: 2026-01-01\n---\n\n正文", True),
+    # 没有 frontmatter 的文件
+    ("# 没有 frontmatter\n\n正文", False),
+    # tags 存在但值有空格
+    ("---\ntitle: x\ndate: 2026-01-01\ntags: [ ]\n---\n\n正文", True),
+    # 单标签
+    ("---\ntitle: x\ndate: 2026-01-01\ntags: [技术]\n---\n\n正文", False),
+    # tags 为多行 YAML 格式（虽然工具不生成此格式，但应健壮处理）
+    ("---\ntitle: x\ndate: 2026-01-01\ntags:\n  - a\n  - b\n---\n\n正文", False),
+])
+def test_frontmatter_missing_tags(content, expected):
+    assert fm.frontmatter_missing_tags(content) == expected
+
+
+# ============================================================
 # extract_date_from_filename
 # ============================================================
 
@@ -203,7 +253,11 @@ def temp_posts_dir():
 
 
 def make_config():
-    return {"api_base": "https://api.example.com/v1", "api_key": "k", "model": "m"}
+    return {
+        "api_base": "https://api.example.com/v1", "api_key": "k", "model": "m",
+        "min_content_length": 0,  # 测试用，不限制内容长度
+        "draft_markers": [],       # 测试用，不启用草稿检测
+    }
 
 
 def test_process_adds_frontmatter_to_file_without_it(temp_posts_dir):
@@ -364,6 +418,83 @@ def test_process_directory_nonexistent():
     assert counts == {"processed": 0, "skipped": 0, "updated": 0, "errors": 0}
 
 
+def test_process_directory_skips_short_content(temp_posts_dir):
+    """内容过短的文件应被跳过。"""
+    (temp_posts_dir / "技术" / "short.md").write_text("# T\n\nx", encoding="utf-8")  # ~5 chars
+
+    config = make_config()
+    config["min_content_length"] = 200
+
+    with mock.patch.object(fm, "call_llm") as mock_llm:
+        counts = fm.process_directory(temp_posts_dir, config, _null_log, dry_run=False, update=False)
+
+    assert counts["skipped"] == 1
+    assert counts["processed"] == 0
+    mock_llm.assert_not_called()
+
+
+def test_process_directory_skips_draft_marker(temp_posts_dir):
+    """包含草稿标记的文件应被跳过。"""
+    content = "<!-- draft -->\n# 还在写\n\n未完待续...\n" + "x" * 200
+    (temp_posts_dir / "技术" / "draft.md").write_text(content, encoding="utf-8")
+
+    config = make_config()
+    config["draft_markers"] = ["<!-- draft -->"]
+
+    with mock.patch.object(fm, "call_llm") as mock_llm:
+        counts = fm.process_directory(temp_posts_dir, config, _null_log, dry_run=False, update=False)
+
+    assert counts["skipped"] == 1
+    assert counts["processed"] == 0
+    mock_llm.assert_not_called()
+
+
+def test_process_directory_updates_missing_tags(temp_posts_dir):
+    """已有 frontmatter 但缺少 tags 的文件 → 即使不带 --update 也触发更新。"""
+    content = "---\ntitle: 某文章\ndate: 2026-01-01\ntags: []\n---\n\n# 某文章\n\n" + "x" * 200
+    (temp_posts_dir / "技术" / "notags.md").write_text(content, encoding="utf-8")
+
+    config = make_config()
+    llm_return = {"title": "某文章", "date": "2026-01-01", "tags": ["技术", "教程"]}
+
+    with mock.patch.object(fm, "call_llm", return_value=llm_return):
+        counts = fm.process_directory(temp_posts_dir, config, _null_log, dry_run=False, update=False)
+
+    assert counts["updated"] == 1
+    result = (temp_posts_dir / "技术" / "notags.md").read_text(encoding="utf-8")
+    assert "tags: [技术, 教程]" in result
+
+
+def test_process_directory_skips_complete_frontmatter(temp_posts_dir):
+    """已有完整 frontmatter（含非空 tags）的文件正常跳过。"""
+    content = "---\ntitle: 完整\ndate: 2026-01-01\ntags: [技术]\n---\n\n" + "x" * 200
+    (temp_posts_dir / "技术" / "complete.md").write_text(content, encoding="utf-8")
+
+    config = make_config()
+
+    with mock.patch.object(fm, "call_llm") as mock_llm:
+        counts = fm.process_directory(temp_posts_dir, config, _null_log, dry_run=False, update=False)
+
+    assert counts["skipped"] == 1
+    assert counts["processed"] == 0
+    mock_llm.assert_not_called()
+
+
+def test_process_directory_draft_overrides_missing_tags(temp_posts_dir):
+    """草稿标记优先级高于缺少 tags：即使 tags 为空，有 draft 标记也跳过。"""
+    content = "<!-- draft -->\n---\ntitle: x\ndate: 2026-01-01\ntags: []\n---\n\n" + "x" * 200
+    (temp_posts_dir / "技术" / "draft_notags.md").write_text(content, encoding="utf-8")
+
+    config = make_config()
+    config["draft_markers"] = ["<!-- draft -->"]
+
+    with mock.patch.object(fm, "call_llm") as mock_llm:
+        counts = fm.process_directory(temp_posts_dir, config, _null_log, dry_run=False, update=False)
+
+    assert counts["skipped"] == 1
+    mock_llm.assert_not_called()
+
+
 # ============================================================
 # get_config WATCH_PATHS
 # ============================================================
@@ -399,6 +530,48 @@ def test_get_config_watch_paths_expands_tilde():
             cfg = fm.get_config()
     assert cfg["watch_paths"] == [os.path.expanduser("~/proj/posts")]
     assert not cfg["watch_paths"][0].startswith("~")
+
+
+def test_get_config_draft_markers_default():
+    """未设置 DRAFT_MARKERS 时使用默认值。"""
+    env = {"API_BASE": "b", "API_KEY": "k", "MODEL": "m"}
+    with mock.patch("main.load_dotenv"):
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = fm.get_config()
+    assert cfg["draft_markers"] == ["<!-- draft -->", "<!-- wip -->"]
+
+
+def test_get_config_draft_markers_custom():
+    """自定义 DRAFT_MARKERS 逗号分隔。"""
+    env = {
+        "API_BASE": "b", "API_KEY": "k", "MODEL": "m",
+        "DRAFT_MARKERS": "<!-- draft -->, <!-- todo -->,<!-- wip -->",
+    }
+    with mock.patch("main.load_dotenv"):
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = fm.get_config()
+    assert cfg["draft_markers"] == ["<!-- draft -->", "<!-- todo -->", "<!-- wip -->"]
+
+
+def test_get_config_min_content_length_default():
+    """未设置 MIN_CONTENT_LENGTH 时默认为 200。"""
+    env = {"API_BASE": "b", "API_KEY": "k", "MODEL": "m"}
+    with mock.patch("main.load_dotenv"):
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = fm.get_config()
+    assert cfg["min_content_length"] == 200
+
+
+def test_get_config_min_content_length_custom():
+    """自定义 MIN_CONTENT_LENGTH。"""
+    env = {
+        "API_BASE": "b", "API_KEY": "k", "MODEL": "m",
+        "MIN_CONTENT_LENGTH": "500",
+    }
+    with mock.patch("main.load_dotenv"):
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = fm.get_config()
+    assert cfg["min_content_length"] == 500
 
 
 # ============================================================
