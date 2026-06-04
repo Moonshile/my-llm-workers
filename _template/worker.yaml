@@ -5,4 +5,8 @@ log_retention_days: 7
 schedule:
   enabled: false
   cron: "0 9 * * *"
+  job_options:
+    misfire_grace_time: 60
+    coalesce: true
+    max_instances: 1
 run: "python main.py"

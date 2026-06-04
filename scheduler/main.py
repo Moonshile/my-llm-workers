@@ -55,7 +55,8 @@ def discover_workers(shared: SharedState):
         )
 
         if enabled:
-            scheduled.append((entry, name, cron_expr, command))
+            job_opts = schedule.get("job_options", {})
+            scheduled.append((entry, name, cron_expr, command, job_opts))
 
     return scheduled
 
@@ -117,17 +118,24 @@ def main():
     else:
         # 启动后台调度器
         bg_scheduler = BackgroundScheduler(daemon=True)
-        for worker_dir, name, cron_expr, command in scheduled:
+        for worker_dir, name, cron_expr, command, job_opts in scheduled:
             trigger = CronTrigger.from_crontab(cron_expr)
             runner = make_worker_runner(worker_dir, command, name, shared)
             next_time = trigger.get_next_fire_time(None, datetime.now())
             next_str = next_time.strftime("%H:%M") if next_time else "-"
+
+            misfire_grace_time = job_opts.get("misfire_grace_time", 60)
+            coalesce = job_opts.get("coalesce", True)
+            max_instances = job_opts.get("max_instances", 1)
 
             bg_scheduler.add_job(
                 runner,
                 trigger=trigger,
                 id=name,
                 name=name,
+                misfire_grace_time=misfire_grace_time,
+                coalesce=coalesce,
+                max_instances=max_instances,
             )
             shared.update_worker(name, next_run=next_str)
             shared.events.add(now, name, f"scheduled [{cron_expr}] next={next_str}")
