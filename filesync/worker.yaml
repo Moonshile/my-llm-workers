@@ -1,0 +1,8 @@
+name: filesync
+description: 按 mtime 将文件组内最新文件同步到其他位置，覆盖前自动备份（30天滚动删除）
+language: python
+log_retention_days: 7
+schedule:
+  enabled: true
+  cron: "*/5 * * * *"
+run: "python main.py"

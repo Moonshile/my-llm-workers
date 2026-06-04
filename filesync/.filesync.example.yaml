@@ -1,0 +1,20 @@
+# 文件同步组配置示例
+# 将此文件复制为 .filesync.yaml 并修改为你的实际路径
+# .filesync.yaml 已被 .gitignore 忽略，不会提交到版本管理
+
+groups:
+  - name: "zshrc"
+    paths:
+      - "~/.zshrc"
+      - "~/dotfiles/zsh/.zshrc"
+
+  - name: "git-config"
+    paths:
+      - "~/.gitconfig"
+      - "~/dotfiles/git/.gitconfig"
+
+  # - name: "another-group"
+  #   paths:
+  #     - "/path/to/file1.txt"
+  #     - "/path/to/file2.txt"
+  #     - "/path/to/file3.txt"

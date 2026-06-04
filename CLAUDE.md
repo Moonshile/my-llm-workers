@@ -15,14 +15,54 @@
 
 ## 开发要求
 
-- 每个工具应包含 `test_main.py`，使用 pytest 编写单元测试
+- 每个工具应包含 `test_*.py`（推荐 `test_<工具名>.py` 避免多工具同名冲突），使用 pytest 编写单元测试
 - 测试覆盖：纯函数 + API mock + 集成测试（临时文件目录）
 - 测试中需 mock `load_dotenv`（`mock.patch("main.load_dotenv")`），禁止在测试中触碰真实 `.env` 文件
 - 每个工具应将 LLM 配置放在 `.env` 文件中，不放在 `worker.yaml` 中
 - 需提供 `.env.example` 作为配置模板，`.env` 已被 `.gitignore` 忽略
-- 执行日志使用 `TimedRotatingFileHandler`，存放在各工具目录下的 `logs/` 中，按天轮转保留 30 天
-  - `run.log`：INFO 级别，记录关键事件（处理/错误/汇总）
-  - `debug.log`：DEBUG 级别，含 SKIP 等细节，用于排查
+
+### 日志规范
+
+所有 Python 工具统一使用以下日志配置，参考 `md-frontmatter` 和 `filesync` 的实现。
+
+**`setup_logging` 函数：**
+- 签名：`setup_logging(backup_count: int = 7) -> logging.Logger`
+- 在 `main()` 内部调用，不在模块级别调用（避免 import 时产生副作用）
+- `backup_count` 参数从 `worker.yaml` 的 `log_retention_days` 字段读取，默认 7
+- Logger 名称使用工具名，如 `logging.getLogger("filesync")`
+
+**三个 handler 结构：**
+
+| Handler | 目标 | 级别 | 格式 |
+|---------|------|------|------|
+| `StreamHandler(sys.stdout)` | 控制台 | INFO | `%(message)s`（纯文本，无时间戳） |
+| `TimedRotatingFileHandler` | `logs/run.log` | INFO | `%(asctime)s [%(levelname)s] %(message)s` |
+| `TimedRotatingFileHandler` | `logs/debug.log` | DEBUG | 同上 |
+
+**`TimedRotatingFileHandler` 配置：**
+- `when="midnight"`, `interval=1`, `backupCount=backup_count`, `encoding="utf-8"`
+- 日志目录 `<tool_dir>/logs/`，已在 `.gitignore` 忽略
+- `run.log`：INFO 级别，记录关键事件（同步/处理/错误/汇总）
+- `debug.log`：DEBUG 级别，含 SKIP 等细节，用于排查
+
+**模块级 logger：**
+- 如果工具函数（如 `sync_group`、`load_config`）需要模块级引用 logger，初始化为 `NullHandler` 占位
+- `main()` 中通过 `global logger` + `setup_logging()` 替换为完整配置
+- 测试中按需 `mock.patch.object(module, "logger")` 验证日志输出
+
+**`worker.yaml` 配置：**
+- 必须包含 `log_retention_days` 字段，指定日志保留天数，默认 7
+- 示例：
+
+```yaml
+name: my-tool
+language: python
+log_retention_days: 7
+schedule:
+  enabled: true
+  cron: "*/5 * * * *"
+run: "python main.py"
+```
 
 ## 依赖管理
 

@@ -41,3 +41,7 @@ Thumbs.db
 *.log
 *.pid
 logs/
+
+# === File Sync ===
+.filesync.yaml
+backups/

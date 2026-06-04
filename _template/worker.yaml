@@ -1,6 +1,7 @@
 name: my-worker
 description: 一句话描述工具用途
 language: python
+log_retention_days: 7
 schedule:
   enabled: false
   cron: "0 9 * * *"
