@@ -142,18 +142,50 @@ class TestSyncGroup:
         # b 保持原内容
         assert b.read_text() == "old"
 
-    def test_missing_file_skipped(self, tmp_path):
-        """不存在的文件被跳过，不影响其他文件同步。"""
-        a = self._create_file(tmp_path, "a.txt", "new", age_sec=0)
-        missing = str(tmp_path / "missing.txt")
+    def test_missing_file_created(self, tmp_path):
+        """缺失的文件自动创建（含父目录）。"""
+        a = self._create_file(tmp_path, "a.txt", "new content", age_sec=0)
+        missing_dir = tmp_path / "subdir"
+        missing = missing_dir / "missing.txt"
 
-        group = {"name": "test", "paths": [str(a), missing]}
+        group = {"name": "test", "paths": [str(a), str(missing)]}
+        with (
+            mock.patch.object(fs.logger, "info") as mock_info,
+            mock.patch.object(fs, "BACKUP_DIR", tmp_path / "backups"),
+        ):
+            result = fs.sync_group(group)
+            assert result is True
+            info_msgs = [c[0][0] for c in mock_info.call_args_list if c[0]]
+            log_text = "\n".join(info_msgs)
+            assert "创建" in log_text
+
+        # 文件已创建且内容正确
+        assert missing.exists()
+        assert missing.read_text() == "new content"
+
+    def test_all_files_missing(self, tmp_path):
+        """所有文件都不存在 → 警告并跳过。"""
+        missing1 = str(tmp_path / "a.txt")
+        missing2 = str(tmp_path / "b.txt")
+
+        group = {"name": "test", "paths": [missing1, missing2]}
         with mock.patch.object(fs.logger, "warning") as mock_warn:
             result = fs.sync_group(group)
-            # 只有 1 个可用文件，不足 2 个，跳过
             assert result is False
             warn_msgs = [c[0][0] for c in mock_warn.call_args_list if c[0]]
-            assert any("不存在" in m for m in warn_msgs)
+            assert any("没有可用文件" in m for m in warn_msgs)
+
+    def test_one_exists_one_missing_creates(self, tmp_path):
+        """一个文件存在一个缺失 → 从存在的文件创建缺失的。"""
+        a = self._create_file(tmp_path, "a.txt", "source", age_sec=0)
+        missing = tmp_path / "deeply" / "nested" / "b.txt"
+
+        group = {"name": "test", "paths": [str(a), str(missing)]}
+        with mock.patch.object(fs, "BACKUP_DIR", tmp_path / "backups"):
+            result = fs.sync_group(group)
+        assert result is True
+        assert missing.exists()
+        assert missing.read_text() == "source"
 
     def test_three_files_sync_to_latest(self, tmp_path):
         """三个文件，最新覆盖其余两个。"""

@@ -200,31 +200,27 @@ def sync_group(group: dict, dry_run: bool = False) -> bool:
         logger.warning(f"[{name}] 文件组少于 2 个路径，跳过")
         return False
 
-    # 展开路径并收集文件信息
+    # 展开路径，分为已存在文件和缺失文件
     paths = [expand_path(p) for p in path_strs]
     infos: dict[Path, dict] = {}
+    missing: list[Path] = []
     for p in paths:
         if p.exists() and p.is_file():
             infos[p] = file_info(p)
+        elif p.is_dir():
+            logger.warning(f"[{name}] 路径是目录而非文件: {p}")
         else:
-            logger.warning(f"[{name}] 文件不存在或非普通文件: {p}")
+            missing.append(p)
 
-    if len(infos) < 2:
-        logger.debug(f"[{name}] 可用文件不足 2 个，跳过同步")
+    if len(infos) == 0:
+        logger.warning(f"[{name}] 组内没有可用文件，跳过同步")
         return False
 
-    # 已全部一致则跳过
-    hashes = {info["hash"] for info in infos.values()}
-    if len(hashes) == 1:
-        logger.debug(f"[{name}] 所有文件内容已一致，跳过")
-        return False
-
-    # 找到 mtime 最新的文件
+    # 找到 mtime 最新的文件（作为同步源）
     latest_path = max(infos, key=lambda p: infos[p]["mtime"])
     latest = infos[latest_path]
 
-    # 冲突检测：是否有其他文件与 latest 同 mtime 但内容不同
-    # 使用 1ms tolerance 避免文件系统 mtime 精度差异
+    # 冲突检测：已有文件中，是否有与 latest 同 mtime 但内容不同
     MTIME_TOLERANCE = 0.001  # 1ms
     conflicts: list[Path] = []
     for p, info in infos.items():
@@ -244,8 +240,9 @@ def sync_group(group: dict, dry_run: bool = False) -> bool:
         )
         return False
 
-    # 执行同步
     synced = False
+
+    # 同步已存在的文件（覆盖为最新内容）
     for p in infos:
         if p == latest_path:
             continue
@@ -272,13 +269,24 @@ def sync_group(group: dict, dry_run: bool = False) -> bool:
         )
 
         if not dry_run:
-            # 覆盖前备份被覆盖文件
             saved = backup_file(p, name)
             if saved:
                 logger.info(f"[{name}] 已备份到: {saved}")
-
             shutil.copy2(latest_path, p)
             logger.info(f"[{name}] ✓ 已同步: {p}")
+        synced = True
+
+    # 创建缺失的文件（无需备份）
+    for p in missing:
+        prefix = "[DRY-RUN] " if dry_run else ""
+        logger.info(
+            f"[{name}] {prefix}创建: {latest_path} → {p}\n"
+            f"  新大小: {latest['size']} bytes"
+        )
+        if not dry_run:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(latest_path, p)
+            logger.info(f"[{name}] ✓ 已创建: {p}")
         synced = True
 
     if not synced:
