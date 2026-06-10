@@ -827,9 +827,9 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
     ])
 
     overview = llm_result.get("overview", [])
-    if not isinstance(overview, list):
-        overview = []
-    if overview:
+    if isinstance(overview, str):
+        parts.append(overview)
+    elif isinstance(overview, list) and overview:
         for item in overview:
             parts.append(f"- {item}")
     else:
@@ -845,12 +845,12 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
             problem = cw.get("problem", "")
             solution = cw.get("solution", "")
             key_decisions = cw.get("key_decisions", [])
-            if not isinstance(key_decisions, list):
-                key_decisions = []
             parts.append(f"### {topic}")
             parts.append(f"- **问题**：{problem}")
             parts.append(f"- **方案**：{solution}")
-            if key_decisions:
+            if isinstance(key_decisions, str) and key_decisions.strip():
+                parts.append(f"- **关键决策**：{key_decisions}")
+            elif isinstance(key_decisions, list) and key_decisions:
                 parts.append("- **关键决策**：")
                 for kd in key_decisions:
                     parts.append(f"  - {kd}")
@@ -868,12 +868,12 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
             rounds = mt.get("rounds", "?")
             reason = mt.get("reason", "")
             suggestions = mt.get("suggestions", [])
-            if not isinstance(suggestions, list):
-                suggestions = []
             parts.append(f"### {topic}")
             parts.append(f"- **交互轮次**：约 {rounds} 轮")
             parts.append(f"- **原因分析**：{reason}")
-            if suggestions:
+            if isinstance(suggestions, str) and suggestions.strip():
+                parts.append(f"- **解决思路**：{suggestions}")
+            elif isinstance(suggestions, list) and suggestions:
                 parts.append("- **解决思路**：")
                 for s in suggestions:
                     parts.append(f"  - {s}")
@@ -883,9 +883,9 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
 
     parts.extend(["## 4. 最佳实践", ""])
     best_practices = llm_result.get("best_practices", [])
-    if not isinstance(best_practices, list):
-        best_practices = []
-    if best_practices:
+    if isinstance(best_practices, str) and best_practices.strip():
+        parts.append(f"- {best_practices}")
+    elif isinstance(best_practices, list) and best_practices:
         for bp in best_practices:
             parts.append(f"- {bp}")
     else:
