@@ -1368,4 +1368,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        logger.critical("未捕获的异常导致退出", exc_info=True)
+        sys.exit(1)
