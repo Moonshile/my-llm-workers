@@ -414,21 +414,42 @@ def parse_frontmatter(content: str) -> Optional[dict]:
 def format_frontmatter(meta: dict) -> str:
     """将元数据格式化为 YAML frontmatter 字符串。"""
     lines = ["---"]
-    # 保持字段顺序: title, date, tags, session_id, project_path, last_processed_timestamp
-    order = ["title", "date", "tags", "session_id", "project_path", "last_processed_timestamp"]
+    # 先输出固定字段（保持顺序），再输出其余字段
+    order = ["title", "date", "tags", "type", "category", "sessions",
+             "session_id", "project_path", "last_processed_timestamp"]
+    seen = set()
     for key in order:
         if key not in meta:
             continue
+        seen.add(key)
         val = meta[key]
         if key == "tags":
             if not val:
                 lines.append("tags: []")
             else:
                 lines.append("tags: [" + ", ".join(val) + "]")
+        elif key == "sessions":
+            # sessions 是一个 list[dict]，需要用 YAML 格式输出
+            lines.append("sessions:")
+            for s in val:
+                lines.append(f"  - session_id: {s['session_id']}")
+                lines.append(f"    title: {s['title']}")
+                lines.append(f"    project_path: {s.get('project_path', '')}")
+                lines.append(f"    last_processed_timestamp: {s['last_processed_timestamp']}")
         elif isinstance(val, str):
             lines.append(f"{key}: {val}")
         else:
             lines.append(f"{key}: {val}")
+
+    # 输出不在固定列表中的其余字段
+    for key, val in meta.items():
+        if key in seen:
+            continue
+        if isinstance(val, str):
+            lines.append(f"{key}: {val}")
+        else:
+            lines.append(f"{key}: {val}")
+
     lines.append("---")
     return "\n".join(lines) + "\n"
 
@@ -457,10 +478,13 @@ def slugify(title: str) -> str:
 # ============================================================================
 
 def find_existing_document(output_dir: Path, session_id: str) -> Optional[Path]:
-    """在输出目录中按 session_id（frontmatter 字段）查找已有文档。"""
+    """在输出目录中按 session_id 查找已有独立文档（不含 daily brief）。"""
     if not output_dir.exists():
         return None
     for md_file in output_dir.rglob("*.md"):
+        # 跳过 daily brief 文件
+        if md_file.name.endswith("-daily.md"):
+            continue
         try:
             content = md_file.read_text(encoding="utf-8")
             fm = parse_frontmatter(content)
@@ -468,6 +492,65 @@ def find_existing_document(output_dir: Path, session_id: str) -> Optional[Path]:
                 return md_file
         except Exception:
             continue
+    return None
+
+
+def _find_daily_brief(output_dir: Path, date_str: str, category: str) -> Optional[Path]:
+    """查找指定日期和分类的 daily brief 文件。"""
+    cat_dir = output_dir / category
+    if not cat_dir.exists():
+        return None
+    target = cat_dir / f"{date_str}-daily.md"
+    return target if target.exists() else None
+
+
+def _read_daily_brief_sessions(daily_path: Path) -> tuple[dict, dict, str]:
+    """
+    读取 daily brief 文件，返回 (sessions_dict, frontmatter, body)。
+
+    sessions_dict: {session_id: {last_processed_timestamp, title, project_path}}
+    """
+    try:
+        content = daily_path.read_text(encoding="utf-8")
+    except Exception:
+        return {}, {}, ""
+
+    fm = parse_frontmatter(content) or {}
+    sessions_list = fm.get("sessions", [])
+    if not isinstance(sessions_list, list):
+        sessions_list = []
+
+    sessions_dict = {}
+    for s in sessions_list:
+        if isinstance(s, dict) and s.get("session_id"):
+            sessions_dict[s["session_id"]] = {
+                "last_processed_timestamp": s.get("last_processed_timestamp", 0),
+                "title": s.get("title", ""),
+                "project_path": s.get("project_path", ""),
+            }
+
+    # 提取 body（frontmatter 之后的内容）
+    m = re.match(r"^---\r?\n.*?\r?\n---\r?\n?", content, re.DOTALL)
+    body = content[m.end():] if m else ""
+
+    return sessions_dict, fm, body
+
+
+def _find_session_in_daily_briefs(output_dir: Path, session_id: str) -> Optional[dict]:
+    """
+    在所有 daily brief 文件中查找指定 session。
+
+    返回 {daily_path, last_processed_timestamp, ...} 或 None。
+    """
+    if not output_dir.exists():
+        return None
+    for md_file in output_dir.rglob("*-daily.md"):
+        sessions_dict, fm, _ = _read_daily_brief_sessions(md_file)
+        if session_id in sessions_dict:
+            return {
+                "daily_path": md_file,
+                **sessions_dict[session_id],
+            }
     return None
 
 
@@ -541,18 +624,28 @@ def build_summary_prompt(
     sections.extend([
         "",
         "## 输出要求",
-        "请以 JSON 格式输出（**仅返回 JSON，不要 markdown 代码块，不要其他文字**），包含以下字段：",
         "",
+        "首先判断这个会话的复杂度。如果内容简单、一两句话就能讲清楚做了什么，",
+        "则标记为 simple 模式，只需输出简要总结。只有内容确实丰富、包含较多决策",
+        "或反复调试的会话，才使用 complex 模式进行完整分析。",
+        "",
+        "请以 JSON 格式输出（**仅返回 JSON，不要 markdown 代码块，不要其他文字**）：",
+        "",
+        "**所有模式都包含的字段**：",
+        "- `complexity`: `\"simple\"` 或 `\"complex\"`",
         "- `title`: 描述性标题（简洁、有意义，保留原始语言）",
         "- `tags`: 3-5 个短标签（中英文均可，便于搜索）",
         "- `category`: 主题分类名（优先从已有分类中选择，无法判断时用 `未分类`）",
-        "- `overview`: 工作概览——做了哪几项工作（简洁列表，每个工作项一句话）",
-        "- `complex_work`: 高复杂度工作列表，每项含 `topic`（主题）、`problem`（问题）、`solution`（方案）、`key_decisions`（关键决策列表）",
-        "- `multi_turn`: 多轮交互分析列表，每项含 `topic`（主题）、`rounds`（大约轮次）、`reason`（多轮才解决的原因）、`suggestions`（可能的解决思路列表）",
+        "- `summary`: 一两句话总结这个会话做了什么",
+        "",
+        "**complex 模式额外包含的字段**：",
+        "- `overview`: 工作概览——做了哪几项工作（简洁列表）",
+        "- `complex_work`: 高复杂度工作列表，每项含 `topic`、`problem`、`solution`、`key_decisions`",
+        "- `multi_turn`: 多轮交互分析列表，每项含 `topic`、`rounds`、`reason`、`suggestions`",
         "- `best_practices`: 可沉淀的最佳实践列表（字符串数组）",
         "- `notes`: 其他值得记录的信息（如有）",
         "",
-        "对于没有足够信息可填的字段，返回空数组或空字符串。",
+        "simple 模式下以上 complex 专属字段请设为空数组或空字符串。",
     ])
 
     return "\n".join(sections)
@@ -645,11 +738,12 @@ def _determine_category(tags: list[str], project_path: str, serious_paths: list[
 
 
 def _build_document_content(llm_result: dict, session_meta: dict, processing_time: str) -> str:
-    """根据 LLM 返回结果构造 markdown 文档正文。"""
+    """根据 LLM 返回结果构造 markdown 文档正文。支持 simple/complex 两种模式。"""
     title = llm_result.get("title", "Untitled")
     session_id = session_meta["session_id"]
     project_path = session_meta["project_path"]
     update_date = session_meta["mtime_date"]
+    complexity = llm_result.get("complexity", "complex")
 
     parts = [
         f"# {title}",
@@ -658,10 +752,21 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
         f"**项目路径**: `{project_path}`",
         f"**最后更新**: {update_date}",
         f"**处理时间**: {processing_time}",
+    ]
+
+    # Simple 模式：只输出一句话总结
+    if complexity == "simple":
+        summary = llm_result.get("summary", "")
+        if summary:
+            parts.extend(["", summary])
+        return "\n".join(parts) + "\n"
+
+    # Complex 模式：完整 5 章节分析
+    parts.extend([
         "",
         "## 1. 工作概览",
         "",
-    ]
+    ])
 
     overview = llm_result.get("overview", [])
     if isinstance(overview, str):
@@ -730,7 +835,7 @@ def _get_chunk_summary_prompt(transcript_chunk: str, chunk_idx: int, total_chunk
     return f"""请分析以下会话记录片段（第 {chunk_idx + 1}/{total_chunks} 块），提取结构化信息。
 
 只返回 JSON（不含 markdown 代码块），格式：
-{{"overview": ["工作项1", ...], "complex_work": [{{"topic": "", "problem": "", "solution": "", "key_decisions": []}}], "multi_turn": [{{"topic": "", "rounds": 0, "reason": "", "suggestions": []}}], "best_practices": [], "notes": ""}}
+{{"complexity":"simple或complex","summary":"一两句话总结","overview":["工作项1"],"complex_work":[{{"topic":"","problem":"","solution":"","key_decisions":[]}}],"multi_turn":[{{"topic":"","rounds":0,"reason":"","suggestions":[]}}],"best_practices":[],"notes":""}}
 
 对话内容：
 {transcript_chunk}"""
@@ -770,6 +875,55 @@ def _synthesize_chunks(chunk_results: list[dict], config: dict, session_meta: di
 去掉各片段间的重复内容，合并同类项。"""
 
     return call_llm(prompt, config)
+
+
+def _write_daily_brief(daily_path: Path, sessions_entries: list[dict],
+                       date_str: str, category: str, processing_time: str):
+    """写入 daily brief 文件。sessions_entries 按 title 排序。"""
+    sessions_entries.sort(key=lambda s: s.get("title", ""))
+
+    # 构造 frontmatter
+    fm_meta = {
+        "title": f"每日简报 — {date_str}",
+        "date": date_str,
+        "type": "daily-brief",
+        "category": category,
+        "sessions": [
+            {
+                "session_id": s["session_id"],
+                "title": s["title"],
+                "project_path": s.get("project_path", ""),
+                "last_processed_timestamp": s["last_processed_timestamp"],
+            }
+            for s in sessions_entries
+        ],
+    }
+    fm = format_frontmatter(fm_meta)
+
+    # 构造正文
+    parts = [
+        f"# 每日简报 — {date_str}",
+        "",
+        f"**分类**: {category}",
+        f"**日期**: {date_str}",
+        f"**处理时间**: {processing_time}",
+        f"**共 {len(sessions_entries)} 个会话**",
+        "",
+    ]
+
+    for s in sessions_entries:
+        title = s.get("title", "Untitled")
+        sid = s.get("session_id", "")
+        proj = s.get("project_path", "")
+        summary = s.get("summary", "")
+        parts.append(f"## {title}")
+        parts.append(f"Session `{sid}` | 项目 `{proj}`")
+        parts.append("")
+        parts.append(summary)
+        parts.append("")
+
+    daily_path.parent.mkdir(parents=True, exist_ok=True)
+    daily_path.write_text(fm + "\n" + "\n".join(parts) + "\n", encoding="utf-8")
 
 
 # ============================================================================
@@ -813,7 +967,8 @@ def process_session(
     """
     处理单个 session：提取对话、调用 LLM、生成文档。
 
-    返回生成的文档路径（dry_run 模式返回 None）。
+    Simple 模式写入 daily brief，complex 模式写入独立文件。
+    返回生成的文档路径（dry_run 或 skip 返回 None）。
     """
     sid = session["session_id"]
     project_path = session["project_path"]
@@ -824,10 +979,12 @@ def process_session(
     output_dir = config["output_dir"]
     serious_paths = config.get("serious_work_paths", [])
 
-    # 1. 查找已有文档
+    # 1. 查找已有文档（独立文件 + daily brief）
     existing_doc_path = find_existing_document(output_dir, sid)
     existing_doc_content = None
     last_processed_ts = None
+    prev_daily_info = None  # 之前是否在 daily brief 中
+
     if existing_doc_path:
         try:
             content = existing_doc_path.read_text(encoding="utf-8")
@@ -837,11 +994,16 @@ def process_session(
             existing_doc_content = content
         except Exception:
             pass
+    else:
+        # 在 daily brief 中查找
+        prev_daily_info = _find_session_in_daily_briefs(output_dir, sid)
+        if prev_daily_info:
+            last_processed_ts = prev_daily_info.get("last_processed_timestamp")
 
-        # 检查是否有增量
-        if last_processed_ts is not None and mtime <= last_processed_ts:
-            logger.debug("  SKIP  %s (无新内容)", sid[:20])
-            return None
+    # 检查是否有增量
+    if last_processed_ts is not None and mtime <= last_processed_ts:
+        logger.debug("  SKIP  %s (无新内容)", sid[:20])
+        return None
 
     # 2. 提取压缩后的对话
     transcript = extract_condensed_transcript(
@@ -856,7 +1018,13 @@ def process_session(
     # 3. 获取已有分类目录
     existing_cats = get_existing_categories(output_dir)
 
-    is_update = existing_doc_content is not None
+    is_update = existing_doc_content is not None or prev_daily_info is not None
+    # 对于 daily brief 中的旧条目，传递简要上下文
+    ref_content = existing_doc_content
+    if prev_daily_info and not ref_content:
+        ref_content = f"此前已记录：{prev_daily_info.get('title', '')}"
+    if is_update and existing_doc_content:
+        ref_content = existing_doc_content
 
     if dry_run:
         logger.info("  DRY-RUN %s (%d chars)", sid[:20], len(transcript))
@@ -866,14 +1034,12 @@ def process_session(
     try:
         max_chars = config.get("max_chunk_chars", 8000)
         if len(transcript) <= max_chars:
-            # 直接调用
             prompt = build_summary_prompt(
                 transcript, session,
-                existing_doc_content, existing_cats, is_update,
+                ref_content, existing_cats, is_update,
             )
             llm_result = call_llm(prompt, config)
         else:
-            # 分块处理
             logger.debug("  分块处理 (%d chars > %d)", len(transcript), max_chars)
             chunk_size = max(1000, max_chars - 2000)
             overlap = 1000
@@ -909,7 +1075,6 @@ def process_session(
     if not isinstance(tags, list):
         tags = [tags] if tags else []
 
-    # 检查是否匹配严肃工作路径
     is_serious = False
     expanded_project = os.path.expanduser(project_path)
     for sp in serious_paths:
@@ -932,41 +1097,106 @@ def process_session(
     if last_ts is None:
         last_ts = mtime
 
-    # 7. 构造文档
     title = llm_result.get("title", "Untitled")
     processing_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    complexity = llm_result.get("complexity", "complex")
 
-    frontmatter_meta = {
-        "title": title,
-        "date": mtime_date,
-        "tags": tags,
-        "session_id": sid,
-        "project_path": project_path,
-        "last_processed_timestamp": last_ts,
-    }
-    fm = format_frontmatter(frontmatter_meta)
-    body = _build_document_content(llm_result, session, processing_time)
-    full_doc = fm + "\n" + body
+    # 7. 输出：simple → daily brief，complex → 独立文件
+    if complexity == "simple":
+        # 如果之前是独立文件，删除它
+        if existing_doc_path:
+            try:
+                existing_doc_path.unlink()
+                logger.debug("  转为 simple，删除旧独立文件: %s", existing_doc_path)
+            except OSError:
+                pass
 
-    # 8. 写入文件
-    # 如果已有文档且路径不同（文件名变了），删除旧文件
-    slug = slugify(title)
-    filename = f"{created_date}-{slug}.md"
-    cat_dir = output_dir / category
-    cat_dir.mkdir(parents=True, exist_ok=True)
-    new_path = cat_dir / filename
+        # 读取或创建 daily brief
+        daily_path = _find_daily_brief(output_dir, created_date, category)
+        if daily_path is None:
+            cat_dir = output_dir / category
+            cat_dir.mkdir(parents=True, exist_ok=True)
+            daily_path = cat_dir / f"{created_date}-daily.md"
 
-    if existing_doc_path and existing_doc_path != new_path:
-        try:
-            existing_doc_path.unlink()
-            logger.debug("  删除旧文件: %s", existing_doc_path)
-        except OSError:
-            pass
+        sessions_dict, _, _ = _read_daily_brief_sessions(daily_path) if daily_path.exists() else ({}, {}, "")
 
-    new_path.write_text(full_doc, encoding="utf-8")
-    logger.info("  ✓ %s/%s", category, filename)
+        # 更新或新增此 session 条目
+        sessions_dict[sid] = {
+            "last_processed_timestamp": last_ts,
+            "title": title,
+            "project_path": project_path,
+            "summary": llm_result.get("summary", ""),
+        }
 
-    return str(new_path)
+        # 重写 daily brief
+        entries = [
+            {
+                "session_id": k,
+                "title": v["title"],
+                "project_path": v.get("project_path", ""),
+                "summary": v.get("summary", ""),
+                "last_processed_timestamp": v["last_processed_timestamp"],
+            }
+            for k, v in sessions_dict.items()
+        ]
+        _write_daily_brief(daily_path, entries, created_date, category, processing_time)
+        logger.info("  ✓ %s/%s-daily.md (%d sessions)", category, created_date, len(entries))
+        return str(daily_path)
+
+    else:
+        # Complex: 独立文件
+        # 如果之前在 daily brief 中，移除
+        if prev_daily_info:
+            old_daily = prev_daily_info["daily_path"]
+            sessions_dict, _, _ = _read_daily_brief_sessions(old_daily)
+            if sid in sessions_dict:
+                del sessions_dict[sid]
+                if sessions_dict:
+                    entries = [
+                        {
+                            "session_id": k,
+                            "title": v["title"],
+                            "project_path": v.get("project_path", ""),
+                            "summary": v.get("summary", ""),
+                            "last_processed_timestamp": v["last_processed_timestamp"],
+                        }
+                        for k, v in sessions_dict.items()
+                    ]
+                    _write_daily_brief(old_daily, entries, created_date, category, processing_time)
+                else:
+                    try:
+                        old_daily.unlink()
+                    except OSError:
+                        pass
+
+        frontmatter_meta = {
+            "title": title,
+            "date": mtime_date,
+            "tags": tags,
+            "session_id": sid,
+            "project_path": project_path,
+            "last_processed_timestamp": last_ts,
+        }
+        fm = format_frontmatter(frontmatter_meta)
+        body = _build_document_content(llm_result, session, processing_time)
+        full_doc = fm + "\n" + body
+
+        slug = slugify(title)
+        filename = f"{created_date}-{slug}.md"
+        cat_dir = output_dir / category
+        cat_dir.mkdir(parents=True, exist_ok=True)
+        new_path = cat_dir / filename
+
+        if existing_doc_path and existing_doc_path != new_path:
+            try:
+                existing_doc_path.unlink()
+                logger.debug("  删除旧文件: %s", existing_doc_path)
+            except OSError:
+                pass
+
+        new_path.write_text(full_doc, encoding="utf-8")
+        logger.info("  ✓ %s/%s", category, filename)
+        return str(new_path)
 
 
 # ============================================================================

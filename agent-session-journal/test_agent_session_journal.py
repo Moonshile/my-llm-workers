@@ -777,7 +777,9 @@ last_processed_timestamp: 9999999999.0
         mock_llm_response = {
             "title": "严肃工作内容",
             "tags": ["技术"],
-            "category": "后端开发",  # LLM 可能返回其他分类，但应被覆盖
+            "category": "后端开发",
+            "complexity": "complex",
+            "summary": "简单总结",
             "overview": ["工作内容"],
             "complex_work": [],
             "multi_turn": [],
@@ -801,11 +803,270 @@ last_processed_timestamp: 9999999999.0
 
         assert result is not None
         result_path = Path(result)
-        # 应该放在 严肃工作 目录下
         assert "严肃工作" in str(result_path)
         content = result_path.read_text()
         fm = journal.parse_frontmatter(content)
         assert "严肃工作" in fm["tags"]
+
+    def test_simple_session_goes_to_daily_brief(self, tmp_path):
+        """Simple 模式写入 daily brief 文件。"""
+        proj_dir = tmp_path / "sessions"
+        sess_dir = proj_dir / "-Users-test"
+        sess_dir.mkdir(parents=True)
+
+        events = [
+            _make_jsonl_event("user", "修改了 README", "2026-06-08T10:00:00Z"),
+            _make_jsonl_event("assistant", "已完成修改", "2026-06-08T10:01:00Z"),
+        ]
+        jsonl = sess_dir / "simple-session.jsonl"
+        _write_jsonl(jsonl, events)
+        yesterday = time.time() - 86400
+        os.utime(jsonl, (yesterday, yesterday))
+
+        output_dir = tmp_path / "output"
+        config = {
+            "api_base": "https://fake-api.example.com/v1",
+            "api_key": "fake-key",
+            "model": "fake-model",
+            "output_dir": output_dir,
+            "max_chunk_chars": 8000,
+            "serious_work_paths": [],
+        }
+
+        mock_llm_response = {
+            "title": "更新 README",
+            "tags": ["文档"],
+            "category": "工具脚本",
+            "complexity": "simple",
+            "summary": "修改了 README 中的配置说明。",
+        }
+
+        def mock_call_llm(prompt, cfg):
+            return mock_llm_response
+
+        with mock.patch.object(journal, "call_llm", mock_call_llm):
+            session = {
+                "session_id": "simple-session",
+                "project_path": "/test",
+                "jsonl_path": str(jsonl),
+                "mtime": yesterday,
+                "mtime_date": "2026-06-08",
+                "created_date": "2026-06-08",
+            }
+            result = journal.process_session(session, config)
+
+        assert result is not None
+        result_path = Path(result)
+        assert result_path.name == "2026-06-08-daily.md"
+        content = result_path.read_text()
+        fm = journal.parse_frontmatter(content)
+        assert fm["type"] == "daily-brief"
+        assert len(fm["sessions"]) == 1
+        assert fm["sessions"][0]["session_id"] == "simple-session"
+        assert "更新 README" in content
+        assert "修改了 README 中的配置说明" in content
+
+    def test_multiple_simple_sessions_aggregate(self, tmp_path):
+        """多个 simple session 聚合到同一个 daily brief。"""
+        output_dir = tmp_path / "output"
+        cat_dir = output_dir / "工具脚本"
+        cat_dir.mkdir(parents=True)
+
+        config = {
+            "api_base": "https://fake-api.example.com/v1",
+            "api_key": "fake-key",
+            "model": "fake-model",
+            "output_dir": output_dir,
+            "max_chunk_chars": 8000,
+            "serious_work_paths": [],
+        }
+
+        # 处理第一个 simple session
+        mock_response_1 = {
+            "title": "修复拼写错误",
+            "tags": ["修复"],
+            "category": "工具脚本",
+            "complexity": "simple",
+            "summary": "修了一处拼写。",
+        }
+
+        with mock.patch.object(journal, "call_llm", lambda p, c: mock_response_1):
+            session1 = {
+                "session_id": "session-1",
+                "project_path": "/test",
+                "jsonl_path": None,
+                "mtime": time.time() - 86400,
+                "mtime_date": "2026-06-08",
+                "created_date": "2026-06-08",
+            }
+            # 需要创建真实的 JSONL 才能提取对话
+            proj_dir = tmp_path / "sessions" / "-test"
+            proj_dir.mkdir(parents=True)
+            jsonl1 = proj_dir / "session-1.jsonl"
+            _write_jsonl(jsonl1, [
+                _make_jsonl_event("user", "修复拼写", "2026-06-08T10:00:00Z"),
+                _make_jsonl_event("assistant", "已修复", "2026-06-08T10:01:00Z"),
+            ])
+            session1["jsonl_path"] = str(jsonl1)
+            result1 = journal.process_session(session1, config)
+
+        assert result1 is not None
+
+        # 处理第二个 simple session（同一天同一分类）
+        mock_response_2 = {
+            "title": "添加注释",
+            "tags": ["文档"],
+            "category": "工具脚本",
+            "complexity": "simple",
+            "summary": "给函数添加了注释。",
+        }
+
+        with mock.patch.object(journal, "call_llm", lambda p, c: mock_response_2):
+            jsonl2 = proj_dir / "session-2.jsonl"
+            _write_jsonl(jsonl2, [
+                _make_jsonl_event("user", "添加注释", "2026-06-08T10:00:00Z"),
+                _make_jsonl_event("assistant", "已完成", "2026-06-08T10:01:00Z"),
+            ])
+            session2 = {
+                "session_id": "session-2",
+                "project_path": "/test",
+                "jsonl_path": str(jsonl2),
+                "mtime": time.time() - 86400,
+                "mtime_date": "2026-06-08",
+                "created_date": "2026-06-08",
+            }
+            result2 = journal.process_session(session2, config)
+
+        assert result2 is not None
+        # 两个结果指向同一个 daily 文件
+        assert result1 == result2
+
+        content = Path(result1).read_text()
+        fm = journal.parse_frontmatter(content)
+        assert len(fm["sessions"]) == 2
+        assert "修复拼写错误" in content
+        assert "添加注释" in content
+
+    def test_simple_session_incremental_update(self, tmp_path):
+        """Daily brief 中的 simple session 增量更新。"""
+        output_dir = tmp_path / "output"
+        config = {
+            "api_base": "https://fake-api.example.com/v1",
+            "api_key": "fake-key",
+            "model": "fake-model",
+            "output_dir": output_dir,
+            "max_chunk_chars": 8000,
+            "serious_work_paths": [],
+        }
+        cat_dir = output_dir / "测试"
+        cat_dir.mkdir(parents=True)
+
+        # 先创建一个已有 daily brief
+        daily_path = cat_dir / "2026-06-08-daily.md"
+        daily_path.write_text("""---
+title: 每日简报 — 2026-06-08
+date: 2026-06-08
+type: daily-brief
+category: 测试
+sessions:
+  - session_id: old-session
+    title: 旧工作
+    project_path: /test
+    last_processed_timestamp: 1000000.0
+---
+
+# 每日简报 — 2026-06-08
+
+## 旧工作
+Session `old-session` | 项目 `/test`
+
+旧的总结。
+""")
+
+        # 同一个 session 有新内容（mtime > last_processed_timestamp）
+        new_mtime = 2000000.0
+        proj_dir = tmp_path / "sessions" / "-test"
+        proj_dir.mkdir(parents=True)
+        jsonl = proj_dir / "old-session.jsonl"
+        _write_jsonl(jsonl, [
+            _make_jsonl_event("user", "新增工作", "2026-06-09T10:00:00Z"),
+            _make_jsonl_event("assistant", "已完成", "2026-06-09T10:01:00Z"),
+        ])
+
+        mock_response = {
+            "title": "更新后的标题",
+            "tags": ["更新"],
+            "category": "测试",
+            "complexity": "simple",
+            "summary": "新增了更多工作内容。",
+        }
+
+        with mock.patch.object(journal, "call_llm", lambda p, c: mock_response):
+            session = {
+                "session_id": "old-session",
+                "project_path": "/test",
+                "jsonl_path": str(jsonl),
+                "mtime": new_mtime,
+                "mtime_date": "2026-06-08",
+                "created_date": "2026-06-08",
+            }
+            result = journal.process_session(session, config)
+
+        assert result is not None
+        content = Path(result).read_text()
+        fm = journal.parse_frontmatter(content)
+        assert len(fm["sessions"]) == 1
+        # last_processed_timestamp 已更新
+        assert fm["sessions"][0]["last_processed_timestamp"] > 1000000.0
+        assert "更新后的标题" in content
+
+    def test_find_session_in_daily_briefs(self, tmp_path):
+        """在 daily brief 中查找 session。"""
+        output_dir = tmp_path / "output"
+        cat_dir = output_dir / "测试"
+        cat_dir.mkdir(parents=True)
+
+        daily_path = cat_dir / "2026-06-08-daily.md"
+        daily_path.write_text("""---
+title: 每日简报
+date: 2026-06-08
+type: daily-brief
+category: 测试
+sessions:
+  - session_id: target-session
+    title: 目标
+    project_path: /test
+    last_processed_timestamp: 1234567.0
+---
+
+内容
+""")
+
+        info = journal._find_session_in_daily_briefs(output_dir, "target-session")
+        assert info is not None
+        assert info["last_processed_timestamp"] == 1234567.0
+        assert info["title"] == "目标"
+
+        # 不存在的 session
+        info = journal._find_session_in_daily_briefs(output_dir, "not-found")
+        assert info is None
+
+    def test_find_existing_document_skips_daily_briefs(self, tmp_path):
+        """find_existing_document 跳过 daily brief 文件。"""
+        output_dir = tmp_path / "output"
+        cat_dir = output_dir / "测试"
+        cat_dir.mkdir(parents=True)
+
+        # 创建 daily brief（不应被 find_existing_document 返回）
+        daily_path = cat_dir / "2026-06-08-daily.md"
+        daily_path.write_text("""---
+title: x
+session_id: target-session
+---
+""")
+
+        result = journal.find_existing_document(output_dir, "target-session")
+        assert result is None
 
 
 # ============================================================

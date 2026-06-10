@@ -91,11 +91,17 @@ python main.py --session-id <uuid> # 仅处理指定 session
 
 ### 7. 文档生成与输出
 
-LLM 返回的 JSON 包含元数据和正文，工具负责：
+LLM 先判断会话复杂度，然后按模式输出：
 
-- 生成 YAML frontmatter
-- 将 JSON 正文转换为结构化 markdown（5 个标准章节 + 可选备注章节）
-- 确定分类子目录和文件名后写入
+- **simple 模式**：内容简单、一两句话能讲清的会话。输出简要总结，
+  写入当天的**每日简报**文件（`yyyy-mm-dd-daily.md`），同一天同分类的简单
+  会话聚合在同一文件中
+- **complex 模式**：内容丰富、包含较多决策或反复调试的会话。
+  输出完整 5 章节分析，写入独立文件
+
+工具负责：生成 YAML frontmatter、转换正文、确定分类和文件名后写入。
+增量时 simple 会话在 daily brief 中按 `session_id` 匹配条目并更新；
+complex 会话按独立文件处理。
 
 ## 目录分类逻辑
 
@@ -123,10 +129,11 @@ LLM 返回的 JSON 包含元数据和正文，工具负责：
 ```text
 OUTPUT_DIR/                     # 由 OUTPUT_DIR 配置
 ├── 严肃工作/                    # 规则 1 强制分类
-│   └── yyyy-mm-dd-标题slug.md
+│   ├── yyyy-mm-dd-标题slug.md  # complex 独立文件
+│   └── yyyy-mm-dd-daily.md     # simple 每日简报
 ├── 前端开发/                    # 规则 2 LLM 智能分类
-├── 后端开发/
-├── 工具脚本/
+│   ├── yyyy-mm-dd-标题slug.md
+│   └── yyyy-mm-dd-daily.md
 └── 未分类/                     # 规则 2 fallback
 ```
 
@@ -157,7 +164,10 @@ last_processed_timestamp: 1700000000.000
 ---
 ```
 
-正文包含 5 个标准章节：
+**complex 模式**正文包含 5 个标准章节：
+
+**simple 模式**仅包含一个简要总结段落，多个 simple 会话聚合在
+`yyyy-mm-dd-daily.md` 文件中，每个会话一个 `## 标题` 小节。
 
 1. **工作概览** — 该 session 中完成的所有工作项
 2. **高复杂度工作** — 难度较高的工作，含问题、方案、关键决策
