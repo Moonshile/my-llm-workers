@@ -1,4 +1,4 @@
-.PHONY: run test install clean
+.PHONY: run test install clean lint lint-md
 
 install:
 	uv sync
@@ -8,6 +8,11 @@ run:
 
 test:
 	uv run pytest -q
+
+lint: lint-md
+
+lint-md:
+	npx markdownlint-cli README.md CLAUDE.md agent-session-journal/README.md --config .markdownlint.json
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

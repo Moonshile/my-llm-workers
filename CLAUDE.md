@@ -26,6 +26,7 @@
 所有 Python 工具统一使用以下日志配置，参考 `md-frontmatter` 和 `filesync` 的实现。
 
 **`setup_logging` 函数：**
+
 - 签名：`setup_logging(backup_count: int = 7) -> logging.Logger`
 - 在 `main()` 内部调用，不在模块级别调用（避免 import 时产生副作用）
 - `backup_count` 参数从 `worker.yaml` 的 `log_retention_days` 字段读取，默认 7
@@ -34,23 +35,26 @@
 **三个 handler 结构：**
 
 | Handler | 目标 | 级别 | 格式 |
-|---------|------|------|------|
+| --- | --- | --- | --- |
 | `StreamHandler(sys.stdout)` | 控制台 | INFO | `%(message)s`（纯文本，无时间戳） |
 | `TimedRotatingFileHandler` | `logs/run.log` | INFO | `%(asctime)s [%(levelname)s] %(message)s` |
 | `TimedRotatingFileHandler` | `logs/debug.log` | DEBUG | 同上 |
 
 **`TimedRotatingFileHandler` 配置：**
+
 - `when="midnight"`, `interval=1`, `backupCount=backup_count`, `encoding="utf-8"`
 - 日志目录 `<tool_dir>/logs/`，已在 `.gitignore` 忽略
 - `run.log`：INFO 级别，记录关键事件（同步/处理/错误/汇总）
 - `debug.log`：DEBUG 级别，含 SKIP 等细节，用于排查
 
 **模块级 logger：**
+
 - 如果工具函数（如 `sync_group`、`load_config`）需要模块级引用 logger，初始化为 `NullHandler` 占位
 - `main()` 中通过 `global logger` + `setup_logging()` 替换为完整配置
 - 测试中按需 `mock.patch.object(module, "logger")` 验证日志输出
 
 **`worker.yaml` 配置：**
+
 - 必须包含 `log_retention_days` 字段，指定日志保留天数，默认 7
 - 示例：
 
@@ -70,6 +74,13 @@ run: "python main.py"
 - Python: 根目录 `pyproject.toml`，用 uv 管理，最低版本 3.13
 - TypeScript: 根目录 `package.json`，用 pnpm 管理
 - Rust: 根目录 `Cargo.toml`（有 Rust 工具时再加）
+
+## LLM 调用
+
+- 所有 LLM API 调用统一使用 **LiteLLM**（`import litellm`），通过 `litellm.completion()` 发起
+- LLM 配置（`API_BASE`、`API_KEY`、`MODEL`）放在工具目录的 `.env` 中，不放在 `worker.yaml`
+- 每次调用在 INFO 日志输出 model、prompt 长度、token 用量和 cost；DEBUG 日志输出完整计费明细
+- 参考实现：`agent-session-journal/main.py` 的 `call_llm` 函数
 
 ## 语言约定
 

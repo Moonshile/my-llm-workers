@@ -1,0 +1,12 @@
+name: agent-session-journal
+description: 扫描 Claude Code session 并生成结构化工作日志
+language: python
+log_retention_days: 7
+schedule:
+  enabled: true
+  cron: "0 11 * * *"
+  job_options:
+    misfire_grace_time: 43200   # 12 小时，电脑从休眠恢复后仍可补执行
+    coalesce: true
+    max_instances: 1
+run: "python main.py"

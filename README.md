@@ -4,7 +4,7 @@ LLM 相关工具集。每个工具独立一个目录，支持 Python、Rust、Ty
 
 ## 目录结构
 
-```
+```text
 .
 ├── pyproject.toml      # Python 依赖统一管理
 ├── package.json        # TypeScript 依赖统一管理
