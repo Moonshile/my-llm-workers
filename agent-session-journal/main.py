@@ -626,10 +626,6 @@ def build_summary_prompt(
     is_update: bool,
 ) -> str:
     """构造发送给 LLM 的 prompt（从 prompt.md 模板注入变量）。"""
-    max_len = 6000
-    truncated = transcript[:max_len]
-    if len(transcript) > max_len:
-        truncated += "\n\n... (对话已截断)"
 
     # 构造 context_section
     if is_update and existing_doc_content:
@@ -639,10 +635,10 @@ def build_summary_prompt(
             "以下是**自上次处理后新增的对话内容**。请基于已有文档和新增内容，"
             "生成一份完整的更新版文档。保持结构与已有文档一致，融合新旧内容。\n\n"
             f"### 已有文档（参考）\n{ref}\n\n"
-            f"### 新增对话内容\n{truncated}"
+            f"### 新增对话内容\n{transcript}"
         )
     else:
-        context_section = f"## 对话内容\n{truncated}"
+        context_section = f"## 对话内容\n{transcript}"
 
     # 构造 categories_section
     if existing_categories:
