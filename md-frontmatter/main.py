@@ -16,9 +16,8 @@ import json
 import argparse
 import logging
 import re
-import urllib.request
-import urllib.error
 import yaml
+import litellm
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -209,32 +208,58 @@ Content:
 {truncated}"""
 
 
-def call_llm(prompt: str, config: dict) -> dict:
-    """调用 OpenAI 兼容 API 生成元数据。"""
-    body = json.dumps({
-        "model": config["model"],
-        "messages": [
-            {"role": "system", "content": "You are a precise metadata generator. Return ONLY valid JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 300,
-    }).encode("utf-8")
+def call_llm(prompt: str, config: dict, logger: logging.Logger) -> dict:
+    """通过 LiteLLM 调用 LLM 生成元数据。"""
+    model = config["model"]
+    api_base = config["api_base"]
+    api_key = config["api_key"]
 
-    url = f"{config['api_base'].rstrip('/')}/chat/completions"
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {config['api_key']}",
-        },
-    )
+    messages = [
+        {"role": "system", "content": "You are a precise metadata generator. Return ONLY valid JSON."},
+        {"role": "user", "content": prompt},
+    ]
 
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        result = json.loads(resp.read())
+    prompt_chars = len(prompt)
+    logger.info("  LLM 调用: model=%s, prompt=%d chars", model, prompt_chars)
+    logger.debug("  LLM 请求详情: model=%s, prompt_chars=%d", model, prompt_chars)
 
-    text = result["choices"][0]["message"]["content"].strip()
+    try:
+        response = litellm.completion(
+            model=model,
+            messages=messages,
+            api_base=api_base,
+            api_key=api_key,
+            temperature=0.3,
+            max_tokens=300,
+            timeout=60,
+        )
+    except Exception as e:
+        logger.error("  LLM 调用失败: %s", e)
+        raise
+
+    # 提取 usage 信息
+    usage = getattr(response, "usage", None)
+    if usage:
+        input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+        output_tokens = getattr(usage, "completion_tokens", 0) or 0
+        total_tokens = getattr(usage, "total_tokens", 0) or input_tokens + output_tokens
+        # 尝试获取 cost（LiteLLM 可能跟踪了成本）
+        cost = None
+        if hasattr(response, "_hidden_params"):
+            cost = response._hidden_params.get("response_cost", None)
+        cost_str = f", cost=${cost:.6f}" if cost is not None else ""
+        logger.debug(
+            "  LLM 计费: input=%d, output=%d, total=%d tokens%s",
+            input_tokens, output_tokens, total_tokens, cost_str,
+        )
+        logger.info(
+            "  LLM 完成: %d input + %d output = %d tokens%s",
+            input_tokens, output_tokens, total_tokens, cost_str,
+        )
+    else:
+        logger.debug("  LLM 完成: 无 usage 信息")
+
+    text = response.choices[0].message.content.strip()
 
     json_match = re.search(r"\{[\s\S]*\}", text)
     if json_match:
@@ -246,7 +271,7 @@ def generate_metadata(content: str, filepath: Path, config: dict, logger: loggin
     """调用 LLM 生成元数据，失败时回退到启发式。"""
     try:
         prompt = build_metadata_prompt(content, filepath)
-        result = call_llm(prompt, config)
+        result = call_llm(prompt, config, logger)
         return {
             "title": result.get("title") or extract_title_from_content(content) or filepath.stem,
             "date": result.get("date") or extract_date_from_filename(filepath) or extract_date_from_mtime(filepath),

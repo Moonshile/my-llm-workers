@@ -163,35 +163,35 @@ def test_build_metadata_prompt_truncates_long_content():
 # ============================================================
 
 def test_call_llm_returns_parsed_json():
-    config = {"api_base": "https://api.example.com/v1", "api_key": "k", "model": "m"}
-    fake_response = {
-        "choices": [{
-            "message": {
-                "content": '{"title": "T", "date": "2026-01-01", "tags": ["a", "b"]}'
-            }
-        }]
-    }
+    from types import SimpleNamespace
 
-    with mock.patch("urllib.request.urlopen") as mock_urlopen:
-        mock_urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(fake_response).encode()
-        result = fm.call_llm("prompt", config)
+    config = {"api_base": "https://api.example.com/v1", "api_key": "k", "model": "m"}
+    mock_response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content='{"title": "T", "date": "2026-01-01", "tags": ["a", "b"]}'
+        ))],
+        usage=SimpleNamespace(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+    )
+
+    with mock.patch("litellm.completion", return_value=mock_response):
+        result = fm.call_llm("prompt", config, _null_log)
 
     assert result == {"title": "T", "date": "2026-01-01", "tags": ["a", "b"]}
 
 
 def test_call_llm_extracts_json_from_code_fence():
-    config = {"api_base": "https://api.example.com/v1", "api_key": "k", "model": "m"}
-    fake_response = {
-        "choices": [{
-            "message": {
-                "content": '```json\n{"title": "X", "date": "2026-02-02", "tags": ["t1"]}\n```'
-            }
-        }]
-    }
+    from types import SimpleNamespace
 
-    with mock.patch("urllib.request.urlopen") as mock_urlopen:
-        mock_urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(fake_response).encode()
-        result = fm.call_llm("prompt", config)
+    config = {"api_base": "https://api.example.com/v1", "api_key": "k", "model": "m"}
+    mock_response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content='```json\n{"title": "X", "date": "2026-02-02", "tags": ["t1"]}\n```'
+        ))],
+        usage=SimpleNamespace(prompt_tokens=80, completion_tokens=30, total_tokens=110),
+    )
+
+    with mock.patch("litellm.completion", return_value=mock_response):
+        result = fm.call_llm("prompt", config, _null_log)
 
     assert result == {"title": "X", "date": "2026-02-02", "tags": ["t1"]}
 
@@ -577,6 +577,7 @@ def test_get_config_min_content_length_custom():
 # ============================================================
 # extract_date_from_mtime
 # ============================================================
+def test_extract_date_from_mtime():
     with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
         f.write(b"test")
         path = f.name
