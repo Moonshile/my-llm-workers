@@ -211,6 +211,8 @@ Content:
 def call_llm(prompt: str, config: dict, logger: logging.Logger) -> dict:
     """通过 LiteLLM 调用 LLM 生成元数据。"""
     model = config["model"]
+    if "/" not in model:
+        model = f"openai/{model}"
     api_base = config["api_base"]
     api_key = config["api_key"]
 

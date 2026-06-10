@@ -654,6 +654,9 @@ def build_summary_prompt(
 def call_llm(prompt: str, config: dict, label: str = "") -> dict:
     """通过 LiteLLM 调用 LLM，返回解析后的 JSON。"""
     model = config["model"]
+    # 如果模型名不含 provider 前缀，默认用 openai/（兼容 OpenAI 兼容 API）
+    if "/" not in model:
+        model = f"openai/{model}"
     api_base = config["api_base"]
     api_key = config["api_key"]
 
