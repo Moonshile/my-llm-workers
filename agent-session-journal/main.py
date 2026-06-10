@@ -33,6 +33,40 @@ logger: logging.Logger = logging.getLogger("agent-session-journal")
 logger.addHandler(logging.NullHandler())
 
 
+class _SessionStats:
+    """追踪单个 session 处理过程中的 LLM 调用统计。"""
+
+    def __init__(self):
+        self.requests = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.total_cost = 0.0
+        self.cost_estimated = False
+
+    def record(self, input_t: int, output_t: int, cost: Optional[float], estimated: bool):
+        self.requests += 1
+        self.input_tokens += input_t
+        self.output_tokens += output_t
+        if cost is not None:
+            self.total_cost += cost
+            if estimated:
+                self.cost_estimated = True
+
+    def summary(self) -> str:
+        cost_label = "预估" if self.cost_estimated else ""
+        return (
+            f"requests={self.requests}, "
+            f"input_tokens={self.input_tokens}, "
+            f"output_tokens={self.output_tokens}, "
+            f"total_tokens={self.input_tokens + self.output_tokens}, "
+            f"{cost_label}cost=${self.total_cost:.6f}"
+        )
+
+
+# 当前 session 的统计，process_session 开始时重置
+_current_stats: Optional[_SessionStats] = None
+
+
 # ============================================================================
 # 日志
 # ============================================================================
@@ -755,6 +789,9 @@ def call_llm(prompt: str, config: dict, label: str = "") -> dict:
             "  LLM 完成: %d input + %d output = %d tokens%s",
             input_tokens, output_tokens, total_tokens, cost_str,
         )
+        # 累计到 session 统计
+        if _current_stats is not None:
+            _current_stats.record(input_tokens, output_tokens, cost, estimated)
     else:
         logger.debug("  LLM 完成: 无 usage 信息")
 
@@ -1089,8 +1126,13 @@ def process_session(
     处理单个 session：提取对话、调用 LLM、生成文档。
 
     Simple 模式写入 daily brief，complex 模式写入独立文件。
+
+    处理完成后输出 session 级别的 LLM 统计日志。
     返回生成的文档路径（dry_run 或 skip 返回 None）。
     """
+    global _current_stats
+    _current_stats = _SessionStats()
+
     sid = session["session_id"]
     project_path = session["project_path"]
     jsonl_path = session.get("jsonl_path")
@@ -1256,8 +1298,8 @@ def process_session(
         ]
         _write_daily_brief(daily_path, entries, created_date, category, processing_time)
         logger.info("  ✓ daily/%s-%s-daily.md (%d sessions)", created_date, category, len(entries))
-        logger.info("[RESULT] session=%s complexity=simple category=%s file=daily/%s-%s-daily.md entries=%d",
-                    sid, category, created_date, category, len(entries))
+        logger.info("[RESULT] session=%s complexity=simple category=%s file=daily/%s-%s-daily.md entries=%d | %s",
+                    sid, category, created_date, category, len(entries), _current_stats.summary())
         return str(daily_path)
 
     else:
@@ -1313,8 +1355,8 @@ def process_session(
 
         new_path.write_text(full_doc, encoding="utf-8")
         logger.info("  ✓ %s/%s", category, filename)
-        logger.info("[RESULT] session=%s complexity=complex category=%s file=%s/%s",
-                    sid, category, category, filename)
+        logger.info("[RESULT] session=%s complexity=complex category=%s file=%s/%s | %s",
+                    sid, category, category, filename, _current_stats.summary())
         return str(new_path)
 
 
@@ -1409,14 +1451,15 @@ def main():
         logger.info("筛选指定 session: %s", args.session_id)
 
     # 处理
+    total = len(sessions)
     processed = 0
     skipped = 0
     errors = 0
 
-    for session in sessions:
+    for idx, session in enumerate(sessions, 1):
         sid = session["session_id"]
         short_id = sid[:20] if len(sid) > 20 else sid
-        logger.info("[%s] %s", session["mtime_date"], short_id)
+        logger.info("[%d/%d] [%s] %s", idx, total, session["mtime_date"], short_id)
 
         try:
             result = process_session(session, config, dry_run=args.dry_run)
@@ -1427,6 +1470,9 @@ def main():
         except Exception:
             logger.error("[%s] 处理出错", short_id, exc_info=True)
             errors += 1
+
+        logger.info("[进度] %d/%d 完成（处理 %d，跳过 %d，错误 %d）",
+                    idx, total, processed, skipped, errors)
 
     logger.info("")
     logger.info("=== 汇总 ===")
