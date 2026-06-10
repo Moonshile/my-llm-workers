@@ -619,7 +619,9 @@ def build_summary_prompt(
         sections.append("")
         sections.append(f"## 备注：已有分类目录")
         sections.append(f"输出目录中已有以下分类: {cats_str}")
-        sections.append("请优先从已有分类中选择 category，若无匹配则创建新分类。分类名只能是一级（不含 /）。")
+        sections.append("请优先从已有分类中选择 category，若无匹配则创建新分类。")
+        sections.append("分类应宽泛通用（如 前端开发、后端开发、工具脚本、AI应用、文档写作），")
+        sections.append("不要太具体（不要用项目名或具体功能名）。分类名只能是一级（不含 /）。")
 
     sections.extend([
         "",
@@ -637,7 +639,7 @@ def build_summary_prompt(
         "- `complexity`: `\"simple\"` 或 `\"complex\"`",
         "- `title`: 描述性标题",
         "- `tags`: `[\"标签1\", \"标签2\"]`（3-5 个）",
-        "- `category`: 分类名",
+        "- `category`: 宽泛的分类名（如 前端开发、后端开发、工具脚本），不要太具体",
         "- `summary`: 一两句话总结",
         "",
         "**complex 模式额外字段，格式示例如下（无内容的留空）：",
@@ -944,7 +946,7 @@ def _synthesize_chunks(chunk_results: list[dict], config: dict, session_meta: di
 请输出完整 JSON（不含 markdown 代码块），包含：
 - `title`: 描述性标题
 - `tags`: 3-5 个标签
-- `category`: 主题分类名
+- `category`: 宽泛的分类名（不要太具体）
 - `overview`: 工作概览
 - `complex_work`: 高复杂度工作
 - `multi_turn`: 多轮交互分析
