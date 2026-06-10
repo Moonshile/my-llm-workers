@@ -1331,6 +1331,10 @@ def main():
         help="预览模式：仅显示将要处理的 session，不实际调用 LLM",
     )
     parser.add_argument(
+        "--preview", type=str, metavar="SESSION_ID",
+        help="预览指定 session：调用 LLM 生成结果并输出到终端，不写入文件",
+    )
+    parser.add_argument(
         "--session-id", type=str,
         help="只处理指定 session_id",
     )
@@ -1354,8 +1358,47 @@ def main():
         logger.info("严肃工作路径: %s", ", ".join(config["serious_work_paths"]))
     logger.info("")
 
-    # 发现 session
+    # 发现 session（preview 模式也需要扫全量以匹配 session_id）
     sessions = discover_sessions(config["session_dirs"])
+
+    # --preview 模式：调用 LLM 并直接输出到终端，不写入文件
+    if args.preview:
+        target = [s for s in sessions if s["session_id"] == args.preview]
+        if not target:
+            logger.error("未找到 session: %s", args.preview)
+            sys.exit(1)
+        session = target[0]
+        logger.info("预览 session: %s", args.preview)
+        transcript = extract_condensed_transcript(session.get("jsonl_path"))
+        if not transcript.strip():
+            logger.error("对话为空，无法预览")
+            sys.exit(1)
+        existing_cats = get_existing_categories(config["output_dir"])
+        prompt = build_summary_prompt(transcript, session, None, existing_cats, False)
+        llm_result = call_llm(prompt, config)
+        processing_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 输出 JSON 结果
+        print("\n========== LLM 原始结果 ==========")
+        print(json.dumps(llm_result, ensure_ascii=False, indent=2))
+        # 输出渲染后的 markdown
+        complexity = llm_result.get("complexity", "complex")
+        title = llm_result.get("title", "Untitled")
+        tags = llm_result.get("tags", [])
+        category = llm_result.get("category", "未分类")
+        frontmatter_meta = {
+            "title": title,
+            "date": session["mtime_date"],
+            "tags": tags,
+            "session_id": session["session_id"],
+            "project_path": session["project_path"],
+            "last_processed_timestamp": 0,
+        }
+        fm = format_frontmatter(frontmatter_meta)
+        body = _build_document_content(llm_result, session, processing_time)
+        print("\n========== 渲染结果 ==========")
+        print(fm + "\n" + body)
+        return
+
     logger.info("发现 %d 个待处理 session（排除当天修改）", len(sessions))
 
     if args.session_id:
