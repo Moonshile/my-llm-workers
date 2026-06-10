@@ -12,6 +12,7 @@
 - `make test` 运行全部测试
 - `_template/` 是新工具模板，不会被调度器扫描（下划线开头的目录跳过）
 - worker.yaml 中 `schedule.enabled: false` 表示手动运行的工具，调度器忽略
+- **禁止直接运行项目中的工具**（如 `python xxx/main.py`），工具由调度器统一调度执行
 
 ## 开发要求
 
