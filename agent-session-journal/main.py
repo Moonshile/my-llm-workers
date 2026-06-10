@@ -153,6 +153,7 @@ def get_config() -> dict:
     ]
 
     max_chunk_chars = int(os.environ.get("MAX_CHUNK_CHARS", "8000"))
+    chunk_overlap = int(os.environ.get("CHUNK_OVERLAP", "1000"))
 
     serious_paths_raw = os.environ.get("SERIOUS_WORK_PATHS", "")
     serious_work_paths = []
@@ -169,6 +170,7 @@ def get_config() -> dict:
         "output_dir": output_dir,
         "session_dirs": session_dirs,
         "max_chunk_chars": max_chunk_chars,
+        "chunk_overlap": chunk_overlap,
         "serious_work_paths": serious_work_paths,
     }
 
@@ -1205,7 +1207,7 @@ def process_session(
         else:
             logger.debug("  分块处理 (%d chars > %d)", len(transcript), max_chars)
             chunk_size = max(1000, max_chars - 2000)
-            overlap = 1000
+            overlap = config.get("chunk_overlap", 1000)
             chunks = []
             start = 0
             while start < len(transcript):

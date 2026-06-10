@@ -10,9 +10,10 @@
 ## 使用方式
 
 ```bash
-python main.py                    # 处理所有符合条件的 session
-python main.py --dry-run          # 预览模式，仅列出待处理 session
-python main.py --session-id <uuid> # 仅处理指定 session
+python main.py                        # 处理所有符合条件的 session
+python main.py --dry-run              # 仅列出待处理 session，不调用 LLM
+python main.py --session-id <uuid>    # 仅处理指定 session
+python main.py --preview <uuid>       # 预览：调用 LLM 并输出到终端，不写文件
 ```
 
 ## 配置
@@ -26,7 +27,8 @@ python main.py --session-id <uuid> # 仅处理指定 session
 | `MODEL` | LiteLLM 模型标识 | 必填 |
 | `OUTPUT_DIR` | 文档输出目录 | `~/Documents/claude-session-journals` |
 | `SESSION_DIRS` | 会话扫描目录（逗号分隔） | `~/.claude/sessions,~/.claude/projects` |
-| `MAX_CHUNK_CHARS` | 大 session 分块大小（字符） | `8000` |
+| `MAX_CHUNK_CHARS` | 大 session 分块阈值（字符） | `8000` |
+| `CHUNK_OVERLAP` | 分块重叠大小（字符） | `1000` |
 | `SERIOUS_WORK_PATHS` | 严肃工作路径（逗号分隔） | 无（不启用） |
 
 ## 实现逻辑
@@ -65,9 +67,9 @@ python main.py --session-id <uuid> # 仅处理指定 session
 
 ### 4. 大 Session 分块
 
-当压缩后的对话超过 `MAX_CHUNK_CHARS`（默认 8000 字符）时：
+当压缩后的对话超过 `MAX_CHUNK_CHARS` 时：
 
-1. 按 ~6000 字符切分为多个块，块间重叠 1000 字符
+1. 按 `MAX_CHUNK_CHARS - 2000` 字符切分，块间重叠 `CHUNK_OVERLAP` 字符
 2. 每块独立调用 LLM 生成结构化部分摘要
 3. 所有分块摘要汇总后，再调用一次 LLM 合成为最终文档
 4. 合成时合并同类项、去除各分块间的重复内容
@@ -75,11 +77,14 @@ python main.py --session-id <uuid> # 仅处理指定 session
 ### 5. LLM 调用
 
 - 使用 **LiteLLM** 统一接口，通过 `API_BASE`、`API_KEY`、`MODEL` 配置
+- 模型名无 `/` 前缀时自动补 `openai/`（兼容 OpenAI 兼容 API）
 - 系统提示要求 LLM 严格只返回 JSON（不含 markdown 代码块）
 - 每次调用的日志输出：
   - **INFO 日志**：model、prompt 长度、input/output/total tokens、
-    cost（如有）
-  - **DEBUG 日志**：同上 + 完整请求详情和计费明细
+    预估费用（基于内置模型定价表）
+  - **DEBUG 日志**：同上 + 完整计费明细
+- 每个 session 处理完后输出汇总：LLM 请求次数、各类 token 总数、
+  预估总费用
 - 失败重试一次，仍失败则记录 error 并跳过该 session
 
 ### 6. 增量重生成
@@ -97,7 +102,7 @@ LLM 先判断会话复杂度，然后按模式输出：
   写入当天的**每日简报**文件（`yyyy-mm-dd-daily.md`），同一天同分类的简单
   会话聚合在同一文件中
 - **complex 模式**：内容丰富、包含较多决策或反复调试的会话。
-  输出完整 5 章节分析，写入独立文件
+  按重要性分级输出完整 5 章节分析，写入独立文件
 
 工具负责：生成 YAML frontmatter、转换正文、确定分类和文件名后写入。
 增量时 simple 会话在 daily brief 中按 `session_id` 匹配条目并更新；
@@ -169,11 +174,12 @@ last_processed_timestamp: 1700000000.000
 **simple 模式**仅包含一个简要总结段落，多个 simple 会话聚合在
 `yyyy-mm-dd-daily.md` 文件中，每个会话一个 `## 标题` 小节。
 
-1. **工作概览** — 该 session 中完成的所有工作项
-2. **高复杂度工作** — 难度较高的工作，含问题、方案、关键决策
-3. **多轮交互分析** — 多轮才解决的问题，分析原因和解决思路
-4. **最佳实践** — 可沉淀的经验总结
-5. **其他备注** — 其他值得记录的信息（无内容时不生成此章节）
+1. **工作概览** — 按重要性排序，琐碎操作聚合一句带过
+2. **高复杂度工作** — 有明确技术挑战的工作（方案取舍/架构决策），
+   CRUD 不算。对话中未解决的问题 solution 标记为「未解决」
+3. **多轮交互分析** — 真正反复失败→调整方向才解决的，非多问一句
+4. **最佳实践** — 仅对话中显式总结/确认的经验，不自行提炼
+5. **其他备注** — 仅遗留问题/后续待办/用户指示（无则不生成）
 
 ## 日志
 
