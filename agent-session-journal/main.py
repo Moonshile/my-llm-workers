@@ -635,17 +635,36 @@ def build_summary_prompt(
         "",
         "**所有模式都包含的字段**：",
         "- `complexity`: `\"simple\"` 或 `\"complex\"`",
-        "- `title`: 描述性标题（简洁、有意义，保留原始语言）",
-        "- `tags`: 3-5 个短标签（中英文均可，便于搜索）",
-        "- `category`: 主题分类名（优先从已有分类中选择，无法判断时用 `未分类`）",
-        "- `summary`: 一两句话总结这个会话做了什么",
+        "- `title`: 描述性标题",
+        "- `tags`: `[\"标签1\", \"标签2\"]`（3-5 个）",
+        "- `category`: 分类名",
+        "- `summary`: 一两句话总结",
         "",
-        "**complex 模式额外包含的字段**（无实质内容的字段留空数组/空字符串，不要硬写）：",
-        "- `overview`: 工作概览——做了哪几项工作（简洁列表）",
-        "- `complex_work`: 高复杂度工作列表，每项含 `topic`、`problem`、`solution`、`key_decisions`",
-        "- `multi_turn`: 多轮交互分析列表，每项含 `topic`、`rounds`、`reason`、`suggestions`",
-        "- `best_practices`: 可沉淀的最佳实践列表（字符串数组）",
-        "- `notes`: 其他值得记录的信息（如有）",
+        "**complex 模式额外字段，格式示例如下（无内容的留空）：",
+        "",
+        '  "overview": ["修复登录页样式", "重构 API 错误处理"],',
+        '  "complex_work": [',
+        '    {',
+        '      "topic": "API 错误处理重构",',
+        '      "problem": "原有错误处理分散在各组件中，难以统一维护",',
+        '      "solution": "抽取统一的 error handler 中间件",',
+        '      "key_decisions": ["采用中间件模式", "保持向后兼容"]',
+        '    }',
+        "  ],",
+        '  "multi_turn": [',
+        '    {',
+        '      "topic": "登录状态持久化方案",',
+        '      "rounds": 5,',
+        '      "reason": "跨域场景下初始方案失效，多轮测试才找到正确配置",',
+        '      "suggestions": ["先确认跨域策略再选方案", "用小步验证代替一次性实现"]',
+        '    }',
+        "  ],",
+        '  "best_practices": ["PR 保持 200 行以内", "公共逻辑尽早抽取"],',
+        '  "notes": ""',
+        "",
+        "**注意**：`overview`、`key_decisions`、`suggestions`、`best_practices` 都是**字符串数组**，",
+        "每个元素是一个独立的字符串，不要合并为单个字符串。如 `suggestions` 必须是",
+        '`["建议1", "建议2"]` 而不是 `"建议1；建议2"`。',
         "",
         "simple 模式下以上 complex 专属字段请设为空数组或空字符串。",
     ])
@@ -776,15 +795,6 @@ def _determine_category(tags: list[str], project_path: str, serious_paths: list[
     return ""  # 返回空表示由 LLM 输出中的 category 决定
 
 
-def _ensure_list(val) -> list:
-    """如果 val 是字符串，转为单元素列表；已是列表则直接返回。"""
-    if isinstance(val, str):
-        return [val] if val.strip() else []
-    if isinstance(val, list):
-        return val
-    return []
-
-
 def _build_document_content(llm_result: dict, session_meta: dict, processing_time: str) -> str:
     """根据 LLM 返回结果构造 markdown 文档正文。支持 simple/complex 两种模式。"""
     title = llm_result.get("title", "Untitled")
@@ -816,7 +826,9 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
         "",
     ])
 
-    overview = _ensure_list(llm_result.get("overview", []))
+    overview = llm_result.get("overview", [])
+    if not isinstance(overview, list):
+        overview = []
     if overview:
         for item in overview:
             parts.append(f"- {item}")
@@ -832,7 +844,9 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
             topic = cw.get("topic", "未命名")
             problem = cw.get("problem", "")
             solution = cw.get("solution", "")
-            key_decisions = _ensure_list(cw.get("key_decisions", []))
+            key_decisions = cw.get("key_decisions", [])
+            if not isinstance(key_decisions, list):
+                key_decisions = []
             parts.append(f"### {topic}")
             parts.append(f"- **问题**：{problem}")
             parts.append(f"- **方案**：{solution}")
@@ -853,7 +867,9 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
             topic = mt.get("topic", "未命名")
             rounds = mt.get("rounds", "?")
             reason = mt.get("reason", "")
-            suggestions = _ensure_list(mt.get("suggestions", []))
+            suggestions = mt.get("suggestions", [])
+            if not isinstance(suggestions, list):
+                suggestions = []
             parts.append(f"### {topic}")
             parts.append(f"- **交互轮次**：约 {rounds} 轮")
             parts.append(f"- **原因分析**：{reason}")
@@ -866,7 +882,9 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
         parts.append("（无记录）")
 
     parts.extend(["## 4. 最佳实践", ""])
-    best_practices = _ensure_list(llm_result.get("best_practices", []))
+    best_practices = llm_result.get("best_practices", [])
+    if not isinstance(best_practices, list):
+        best_practices = []
     if best_practices:
         for bp in best_practices:
             parts.append(f"- {bp}")
