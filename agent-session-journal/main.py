@@ -698,11 +698,16 @@ def call_llm(prompt: str, config: dict, label: str = "") -> dict:
         input_tokens = getattr(usage, "prompt_tokens", 0) or 0
         output_tokens = getattr(usage, "completion_tokens", 0) or 0
         total_tokens = getattr(usage, "total_tokens", 0) or input_tokens + output_tokens
-        # 尝试获取 cost（LiteLLM 可能跟踪了成本）
+        # 优先取 LiteLLM 跟踪的 cost，否则本地估算
         cost = None
         if hasattr(response, "_hidden_params"):
             cost = response._hidden_params.get("response_cost", None)
-        cost_str = f", cost=${cost:.6f}" if cost is not None else ""
+        estimated = cost is None
+        if estimated:
+            cost = _estimate_cost(model, input_tokens, output_tokens)
+        cost_str = f", 预估费用 ${cost:.6f}" if estimated and cost is not None else (
+            f", 费用 ${cost:.6f}" if cost is not None else ""
+        )
         logger.debug(
             "  LLM 计费: input=%d, output=%d, total=%d tokens%s",
             input_tokens, output_tokens, total_tokens, cost_str,
@@ -723,6 +728,35 @@ def call_llm(prompt: str, config: dict, label: str = "") -> dict:
     return json.loads(text)
 
 
+# 模型预估单价（USD / 1M tokens），用于 LiteLLM 无法提供 cost 时的本地估算
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    # (input_price, output_price) per 1M tokens
+    "claude-opus-4": (15.0, 75.0),
+    "claude-sonnet-4": (3.0, 15.0),
+    "claude-haiku-4": (0.80, 4.0),
+    "claude-fable-5": (3.0, 15.0),
+    "gpt-4o": (2.50, 10.0),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4.1": (2.00, 8.0),
+    "deepseek-chat": (0.27, 1.10),
+    "deepseek-reasoner": (0.55, 2.19),
+    "deepseek-v3": (0.27, 1.10),
+    "deepseek-r1": (0.55, 2.19),
+    "deepseek-v4": (0.27, 1.10),
+    "gemini-2.5-flash": (0.15, 0.60),
+    "gemini-2.5-pro": (1.25, 10.0),
+}
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
+    """根据模型名和 token 用量估算费用。匹配不到返回 None。"""
+    model_lower = model.lower()
+    for prefix, (in_price, out_price) in _MODEL_PRICING.items():
+        if prefix in model_lower:
+            return (input_tokens / 1_000_000) * in_price + (output_tokens / 1_000_000) * out_price
+    return None
+
+
 def _ensure_tags_include_serious(tags: list[str]) -> list[str]:
     """确保 tags 中包含 '严肃工作'（去重）。"""
     if "严肃工作" not in tags:
@@ -740,6 +774,15 @@ def _determine_category(tags: list[str], project_path: str, serious_paths: list[
             return "严肃工作"
     # 从 tags 推断分类（由 LLM 在 metadata 中给出，这里由 LLM 输出决定）
     return ""  # 返回空表示由 LLM 输出中的 category 决定
+
+
+def _ensure_list(val) -> list:
+    """如果 val 是字符串，转为单元素列表；已是列表则直接返回。"""
+    if isinstance(val, str):
+        return [val] if val.strip() else []
+    if isinstance(val, list):
+        return val
+    return []
 
 
 def _build_document_content(llm_result: dict, session_meta: dict, processing_time: str) -> str:
@@ -773,10 +816,8 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
         "",
     ])
 
-    overview = llm_result.get("overview", [])
-    if isinstance(overview, str):
-        parts.append(overview)
-    elif overview:
+    overview = _ensure_list(llm_result.get("overview", []))
+    if overview:
         for item in overview:
             parts.append(f"- {item}")
     else:
@@ -784,12 +825,14 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
 
     parts.extend(["", "## 2. 高复杂度工作", ""])
     complex_work = llm_result.get("complex_work", [])
-    if complex_work:
+    if isinstance(complex_work, list) and complex_work:
         for cw in complex_work:
+            if not isinstance(cw, dict):
+                continue
             topic = cw.get("topic", "未命名")
             problem = cw.get("problem", "")
             solution = cw.get("solution", "")
-            key_decisions = cw.get("key_decisions", [])
+            key_decisions = _ensure_list(cw.get("key_decisions", []))
             parts.append(f"### {topic}")
             parts.append(f"- **问题**：{problem}")
             parts.append(f"- **方案**：{solution}")
@@ -803,12 +846,14 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
 
     parts.extend(["## 3. 多轮交互分析", ""])
     multi_turn = llm_result.get("multi_turn", [])
-    if multi_turn:
+    if isinstance(multi_turn, list) and multi_turn:
         for mt in multi_turn:
+            if not isinstance(mt, dict):
+                continue
             topic = mt.get("topic", "未命名")
             rounds = mt.get("rounds", "?")
             reason = mt.get("reason", "")
-            suggestions = mt.get("suggestions", [])
+            suggestions = _ensure_list(mt.get("suggestions", []))
             parts.append(f"### {topic}")
             parts.append(f"- **交互轮次**：约 {rounds} 轮")
             parts.append(f"- **原因分析**：{reason}")
@@ -821,7 +866,7 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
         parts.append("（无记录）")
 
     parts.extend(["## 4. 最佳实践", ""])
-    best_practices = llm_result.get("best_practices", [])
+    best_practices = _ensure_list(llm_result.get("best_practices", []))
     if best_practices:
         for bp in best_practices:
             parts.append(f"- {bp}")
@@ -884,10 +929,20 @@ def _synthesize_chunks(chunk_results: list[dict], config: dict, session_meta: di
 
 def _write_daily_brief(daily_path: Path, sessions_entries: list[dict],
                        date_str: str, category: str, processing_time: str):
-    """写入 daily brief 文件。sessions_entries 按 title 排序。"""
+    """写入 daily brief 文件。有实质内容的 session 独立展示，空 session 聚合到末尾。"""
     sessions_entries.sort(key=lambda s: s.get("title", ""))
 
-    # 构造 frontmatter
+    # 分离有意义和无内容的 session（summary 为空或极短视为空）
+    meaningful = []
+    empty_sessions = []
+    for s in sessions_entries:
+        summary = s.get("summary", "").strip()
+        if len(summary) < 10:
+            empty_sessions.append(s)
+        else:
+            meaningful.append(s)
+
+    # 构造 frontmatter（包含所有 session）
     fm_meta = {
         "title": f"每日简报 — {date_str}",
         "date": date_str,
@@ -912,11 +967,12 @@ def _write_daily_brief(daily_path: Path, sessions_entries: list[dict],
         f"**分类**: {category}",
         f"**日期**: {date_str}",
         f"**处理时间**: {processing_time}",
-        f"**共 {len(sessions_entries)} 个会话**",
+        f"**共 {len(sessions_entries)} 个会话**（有内容 {len(meaningful)}，空 {len(empty_sessions)}）",
         "",
     ]
 
-    for s in sessions_entries:
+    # 有意义的内容
+    for s in meaningful:
         title = s.get("title", "Untitled")
         sid = s.get("session_id", "")
         proj = s.get("project_path", "")
@@ -925,6 +981,17 @@ def _write_daily_brief(daily_path: Path, sessions_entries: list[dict],
         parts.append(f"Session `{sid}` | 项目 `{proj}`")
         parts.append("")
         parts.append(summary)
+        parts.append("")
+
+    # 空 session 聚合
+    if empty_sessions:
+        parts.append("## 空session")
+        parts.append("")
+        for s in empty_sessions:
+            title = s.get("title", "Untitled")
+            sid = s.get("session_id", "")
+            proj = s.get("project_path", "")
+            parts.append(f"- {title} — `{sid}` (`{proj}`)")
         parts.append("")
 
     daily_path.parent.mkdir(parents=True, exist_ok=True)
