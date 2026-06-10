@@ -420,54 +420,51 @@ class TestTagHelpers:
 class TestBuildDocumentContent:
     """文档内容构建测试。"""
 
-    def test_basic_structure(self):
+    def test_complex_with_sections(self):
+        """Complex 模式：自由 sections 结构。"""
         llm_result = {
             "title": "测试标题",
-            "overview": ["工作项1", "工作项2"],
-            "complex_work": [
-                {
-                    "topic": "复杂问题",
-                    "problem": "描述",
-                    "solution": "方案",
-                    "key_decisions": ["决策1"],
-                }
+            "complexity": "complex",
+            "summary": "做了一些事",
+            "sections": [
+                {"heading": "工作概览", "content": "- 工作项1\n- 工作项2"},
+                {"heading": "技术挑战", "content": "遇到了 xxx 问题"},
+                {"heading": "结论", "content": "最终采用了 yyy 方案"},
             ],
-            "multi_turn": [
-                {
-                    "topic": "多轮问题",
-                    "rounds": 5,
-                    "reason": "原因",
-                    "suggestions": ["建议1"],
-                }
-            ],
-            "best_practices": ["实践1"],
-            "notes": "备注",
         }
         session = {"session_id": "abc", "project_path": "/test", "mtime_date": "2026-06-09"}
         result = journal._build_document_content(llm_result, session, "2026-06-10 10:00:00")
 
         assert "# 测试标题" in result
-        assert "## 1. 工作概览" in result
+        assert "## 工作概览" in result
         assert "工作项1" in result
-        assert "## 2. 高复杂度工作" in result
-        assert "### 复杂问题" in result
-        assert "## 3. 多轮交互分析" in result
-        assert "## 4. 最佳实践" in result
-        assert "## 5. 其他备注" in result
+        assert "## 技术挑战" in result
+        assert "## 结论" in result
 
-    def test_empty_sections(self):
+    def test_simple_mode(self):
+        """Simple 模式：只输出 summary。"""
         llm_result = {
-            "title": "空",
-            "overview": [],
-            "complex_work": [],
-            "multi_turn": [],
-            "best_practices": [],
-            "notes": "",
+            "title": "简单事",
+            "complexity": "simple",
+            "summary": "修了个 typo。",
+            "sections": [],
         }
         session = {"session_id": "abc", "project_path": "/test", "mtime_date": "2026-06-09"}
         result = journal._build_document_content(llm_result, session, "now")
-        assert "（无记录）" in result
-        assert "## 5. 其他备注" not in result
+        assert "修了个 typo" in result
+        assert "##" not in result
+
+    def test_empty_sections_fallback(self):
+        """sections 为空时回退到 summary。"""
+        llm_result = {
+            "title": "空",
+            "complexity": "complex",
+            "summary": "简要描述",
+            "sections": [],
+        }
+        session = {"session_id": "abc", "project_path": "/test", "mtime_date": "2026-06-09"}
+        result = journal._build_document_content(llm_result, session, "now")
+        assert "简要描述" in result
 
 
 # ============================================================
@@ -586,25 +583,12 @@ class TestIntegration:
             "title": "Python 脚本开发",
             "tags": ["Python", "开发"],
             "category": "后端开发",
-            "overview": ["编写 Python 脚本", "修复 bug"],
-            "complex_work": [
-                {
-                    "topic": "Bug 修复",
-                    "problem": "代码有逻辑错误",
-                    "solution": "通过 Edit 工具修复",
-                    "key_decisions": ["使用逐行调试"],
-                }
+            "complexity": "complex",
+            "summary": "编写 Python 脚本并修复 bug。",
+            "sections": [
+                {"heading": "工作概览", "content": "- 编写 Python 脚本\n- 修复 bug"},
+                {"heading": "Bug 修复", "content": "代码有逻辑错误，通过 Edit 工具修复"},
             ],
-            "multi_turn": [
-                {
-                    "topic": "Bug 定位",
-                    "rounds": 2,
-                    "reason": "问题描述不够清晰",
-                    "suggestions": ["提供更详细的错误信息"],
-                }
-            ],
-            "best_practices": ["先测试再修改"],
-            "notes": "无",
         }
 
         def mock_call_llm(prompt, cfg):
@@ -687,11 +671,9 @@ last_processed_timestamp: 1000000.0
             "title": "更新后的标题",
             "tags": ["新标签"],
             "category": "后端开发",
-            "overview": ["新增的工作"],
-            "complex_work": [],
-            "multi_turn": [],
-            "best_practices": [],
-            "notes": "",
+            "complexity": "complex",
+            "summary": "新增了工作。",
+            "sections": [{"heading": "新增工作", "content": "新增了一些内容"}],
         }
 
         def mock_call_llm(prompt, cfg):
@@ -786,12 +768,8 @@ last_processed_timestamp: 9999999999.0
             "tags": ["技术"],
             "category": "后端开发",
             "complexity": "complex",
-            "summary": "简单总结",
-            "overview": ["工作内容"],
-            "complex_work": [],
-            "multi_turn": [],
-            "best_practices": [],
-            "notes": "",
+            "summary": "做了严肃的工作。",
+            "sections": [{"heading": "工作内容", "content": "完成了重要功能"}],
         }
 
         def mock_call_llm(prompt, cfg):

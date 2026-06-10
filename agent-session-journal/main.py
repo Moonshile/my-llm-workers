@@ -654,14 +654,19 @@ def build_summary_prompt(
         categories_section = ""
 
     template = _load_prompt_template()
-    return template.format(
-        session_id=session_meta["session_id"],
-        project_path=session_meta["project_path"],
-        created_date=session_meta.get("created_date", "unknown"),
-        update_date=session_meta.get("mtime_date", "unknown"),
-        context_section=context_section,
-        categories_section=categories_section,
-    )
+    # 使用简单字符串替换（避免 .format() 被 JSON 示例中的花括号干扰）
+    result = template
+    replacements = {
+        "{session_id}": session_meta["session_id"],
+        "{project_path}": session_meta["project_path"],
+        "{created_date}": session_meta.get("created_date", "unknown"),
+        "{update_date}": session_meta.get("mtime_date", "unknown"),
+        "{context_section}": context_section,
+        "{categories_section}": categories_section,
+    }
+    for key, val in replacements.items():
+        result = result.replace(key, val)
+    return result
 
 
 def call_llm(prompt: str, config: dict, label: str = "") -> dict:
@@ -825,91 +830,33 @@ def _build_document_content(llm_result: dict, session_meta: dict, processing_tim
             parts.extend(["", summary])
         return "\n".join(parts) + "\n"
 
-    # Complex 模式：完整 5 章节分析
-    parts.extend([
-        "",
-        "## 1. 工作概览",
-        "",
-    ])
-
-    overview = llm_result.get("overview", [])
-    if isinstance(overview, str):
-        parts.append(overview)
-    elif isinstance(overview, list) and overview:
-        for item in overview:
-            parts.append(f"- {item}")
-    else:
-        parts.append("（无记录）")
-
-    parts.extend(["", "## 2. 高复杂度工作", ""])
-    complex_work = llm_result.get("complex_work", [])
-    if isinstance(complex_work, list) and complex_work:
-        for cw in complex_work:
-            if not isinstance(cw, dict):
+    # Complex 模式：自由结构 sections
+    sections = llm_result.get("sections", [])
+    if isinstance(sections, list) and sections:
+        for sec in sections:
+            if not isinstance(sec, dict):
                 continue
-            topic = cw.get("topic", "未命名")
-            problem = cw.get("problem", "")
-            solution = cw.get("solution", "")
-            key_decisions = cw.get("key_decisions", [])
-            parts.append(f"### {topic}")
-            parts.append(f"- **问题**：{problem}")
-            parts.append(f"- **方案**：{solution}")
-            if isinstance(key_decisions, str) and key_decisions.strip():
-                parts.append(f"- **关键决策**：{key_decisions}")
-            elif isinstance(key_decisions, list) and key_decisions:
-                parts.append("- **关键决策**：")
-                for kd in key_decisions:
-                    parts.append(f"  - {kd}")
-            parts.append("")
+            heading = sec.get("heading", "")
+            content = sec.get("content", "")
+            if heading:
+                parts.extend(["", f"## {heading}", ""])
+            if content:
+                parts.append(content)
     else:
-        parts.append("（无记录）")
-
-    parts.extend(["## 3. 多轮交互分析", ""])
-    multi_turn = llm_result.get("multi_turn", [])
-    if isinstance(multi_turn, list) and multi_turn:
-        for mt in multi_turn:
-            if not isinstance(mt, dict):
-                continue
-            topic = mt.get("topic", "未命名")
-            rounds = mt.get("rounds", "?")
-            reason = mt.get("reason", "")
-            suggestions = mt.get("suggestions", [])
-            parts.append(f"### {topic}")
-            parts.append(f"- **交互轮次**：约 {rounds} 轮")
-            parts.append(f"- **原因分析**：{reason}")
-            if isinstance(suggestions, str) and suggestions.strip():
-                parts.append(f"- **解决思路**：{suggestions}")
-            elif isinstance(suggestions, list) and suggestions:
-                parts.append("- **解决思路**：")
-                for s in suggestions:
-                    parts.append(f"  - {s}")
-            parts.append("")
-    else:
-        parts.append("（无记录）")
-
-    parts.extend(["## 4. 最佳实践", ""])
-    best_practices = llm_result.get("best_practices", [])
-    if isinstance(best_practices, str) and best_practices.strip():
-        parts.append(f"- {best_practices}")
-    elif isinstance(best_practices, list) and best_practices:
-        for bp in best_practices:
-            parts.append(f"- {bp}")
-    else:
-        parts.append("（无记录）")
-
-    notes = llm_result.get("notes", "")
-    if notes:
-        parts.extend(["", "## 5. 其他备注", "", notes])
+        # 兼容旧格式（overview/complex_work 等）
+        summary = llm_result.get("summary", "")
+        if summary:
+            parts.extend(["", summary])
 
     return "\n".join(parts) + "\n"
 
 
 def _get_chunk_summary_prompt(transcript_chunk: str, chunk_idx: int, total_chunks: int) -> str:
     """构造分块摘要 prompt。"""
-    return f"""请分析以下会话记录片段（第 {chunk_idx + 1}/{total_chunks} 块），提取结构化信息。
+    return f"""请分析以下会话记录片段（第 {chunk_idx + 1}/{total_chunks} 块），提取关键信息。
 
-只返回 JSON（不含 markdown 代码块），格式：
-{{"complexity":"simple或complex","summary":"一两句话总结","overview":["工作项1"],"complex_work":[{{"topic":"","problem":"","solution":"","key_decisions":[]}}],"multi_turn":[{{"topic":"","rounds":0,"reason":"","suggestions":[]}}],"best_practices":[],"notes":""}}
+严格基于对话事实，不要猜测。只返回 JSON（不含 markdown 代码块），格式：
+{{"summary":"这段对话做了什么（一两句话）","key_points":["关键事件或决策1","关键事件或决策2"],"issues":["遇到的问题或踩坑"],"unresolved":["未解决的问题"]}}
 
 对话内容：
 {transcript_chunk}"""
@@ -937,16 +884,15 @@ def _synthesize_chunks(chunk_results: list[dict], config: dict, session_meta: di
 {chunks_text}
 
 请输出完整 JSON（不含 markdown 代码块），包含：
+- `complexity`: "simple" 或 "complex"
 - `title`: 描述性标题
 - `tags`: 3-5 个标签
 - `category`: 宽泛的分类名（不要太具体）
-- `overview`: 工作概览
-- `complex_work`: 高复杂度工作
-- `multi_turn`: 多轮交互分析
-- `best_practices`: 最佳实践
-- `notes`: 其他备注
+- `summary`: 一两句话总结
+- `sections`: 自由组织的章节数组，每项含 heading（章节标题）和 content（markdown 内容）
 
-去掉各片段间的重复内容，合并同类项。"""
+根据内容特点自行决定章节结构，去掉各片段间的重复，合并同类项。
+严格基于对话原文，不猜测。"""
 
     return call_llm(prompt, config)
 
