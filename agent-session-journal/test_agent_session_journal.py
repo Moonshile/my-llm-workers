@@ -864,7 +864,8 @@ last_processed_timestamp: 9999999999.0
 
         assert result is not None
         result_path = Path(result)
-        assert result_path.name == "2026-06-08-daily.md"
+        assert result_path.name == "2026-06-08-工具脚本-daily.md"
+        assert "daily" in str(result_path)
         content = result_path.read_text()
         fm = journal.parse_frontmatter(content)
         assert fm["type"] == "daily-brief"
@@ -969,7 +970,9 @@ last_processed_timestamp: 9999999999.0
         cat_dir.mkdir(parents=True)
 
         # 先创建一个已有 daily brief
-        daily_path = cat_dir / "2026-06-08-daily.md"
+        daily_dir = output_dir / "daily"
+        daily_dir.mkdir(parents=True, exist_ok=True)
+        daily_path = daily_dir / "2026-06-08-测试-daily.md"
         daily_path.write_text("""---
 title: 每日简报 — 2026-06-08
 date: 2026-06-08
@@ -1030,10 +1033,10 @@ Session `old-session` | 项目 `/test`
     def test_find_session_in_daily_briefs(self, tmp_path):
         """在 daily brief 中查找 session。"""
         output_dir = tmp_path / "output"
-        cat_dir = output_dir / "测试"
-        cat_dir.mkdir(parents=True)
+        daily_dir = output_dir / "daily"
+        daily_dir.mkdir(parents=True)
 
-        daily_path = cat_dir / "2026-06-08-daily.md"
+        daily_path = daily_dir / "2026-06-08-测试-daily.md"
         daily_path.write_text("""---
 title: 每日简报
 date: 2026-06-08
@@ -1061,11 +1064,11 @@ sessions:
     def test_find_existing_document_skips_daily_briefs(self, tmp_path):
         """find_existing_document 跳过 daily brief 文件。"""
         output_dir = tmp_path / "output"
-        cat_dir = output_dir / "测试"
-        cat_dir.mkdir(parents=True)
+        daily_dir = output_dir / "daily"
+        daily_dir.mkdir(parents=True)
 
         # 创建 daily brief（不应被 find_existing_document 返回）
-        daily_path = cat_dir / "2026-06-08-daily.md"
+        daily_path = daily_dir / "2026-06-08-测试-daily.md"
         daily_path.write_text("""---
 title: x
 session_id: target-session

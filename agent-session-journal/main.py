@@ -496,11 +496,11 @@ def find_existing_document(output_dir: Path, session_id: str) -> Optional[Path]:
 
 
 def _find_daily_brief(output_dir: Path, date_str: str, category: str) -> Optional[Path]:
-    """查找指定日期和分类的 daily brief 文件。"""
-    cat_dir = output_dir / category
-    if not cat_dir.exists():
+    """查找指定日期和分类的 daily brief 文件（统一在 daily/ 子目录下）。"""
+    daily_dir = output_dir / "daily"
+    if not daily_dir.exists():
         return None
-    target = cat_dir / f"{date_str}-daily.md"
+    target = daily_dir / f"{date_str}-{category}-daily.md"
     return target if target.exists() else None
 
 
@@ -544,7 +544,10 @@ def _find_session_in_daily_briefs(output_dir: Path, session_id: str) -> Optional
     """
     if not output_dir.exists():
         return None
-    for md_file in output_dir.rglob("*-daily.md"):
+    daily_dir = output_dir / "daily"
+    if not daily_dir.exists():
+        return None
+    for md_file in daily_dir.glob("*-daily.md"):
         sessions_dict, fm, _ = _read_daily_brief_sessions(md_file)
         if session_id in sessions_dict:
             return {
@@ -1208,12 +1211,12 @@ def process_session(
             except OSError:
                 pass
 
-        # 读取或创建 daily brief
+        # 读取或创建 daily brief（统一在 daily/ 子目录下）
         daily_path = _find_daily_brief(output_dir, created_date, category)
         if daily_path is None:
-            cat_dir = output_dir / category
-            cat_dir.mkdir(parents=True, exist_ok=True)
-            daily_path = cat_dir / f"{created_date}-daily.md"
+            daily_dir = output_dir / "daily"
+            daily_dir.mkdir(parents=True, exist_ok=True)
+            daily_path = daily_dir / f"{created_date}-{category}-daily.md"
 
         sessions_dict, _, _ = _read_daily_brief_sessions(daily_path) if daily_path.exists() else ({}, {}, "")
 
@@ -1237,9 +1240,9 @@ def process_session(
             for k, v in sessions_dict.items()
         ]
         _write_daily_brief(daily_path, entries, created_date, category, processing_time)
-        logger.info("  ✓ %s/%s-daily.md (%d sessions)", category, created_date, len(entries))
-        logger.info("[RESULT] session=%s complexity=simple category=%s file=%s/%s-daily.md entries=%d",
-                    sid, category, category, created_date, len(entries))
+        logger.info("  ✓ daily/%s-%s-daily.md (%d sessions)", created_date, category, len(entries))
+        logger.info("[RESULT] session=%s complexity=simple category=%s file=daily/%s-%s-daily.md entries=%d",
+                    sid, category, created_date, category, len(entries))
         return str(daily_path)
 
     else:
