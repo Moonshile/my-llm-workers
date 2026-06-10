@@ -42,4 +42,9 @@ uv run python scheduler/main.py # 或直接运行
 - 每个工具执行超时 1 小时
 - 工具执行失败不影响其他工具
 - 执行日志写入各工具 `logs/` 目录
+- **调度器自身日志**写入 `scheduler/logs/` 目录：
+  - `run.log`：INFO 级别，记录 worker 启停、成功/失败事件
+  - `debug.log`：DEBUG 级别，含完整 stdout/stderr
+  - 任务异常退出（非零退出码、超时、异常）时，完整错误栈和 stdout/stderr
+    会写入调度器日志，无需再去各工具的日志目录排查
 - 仪表盘事件日志保留最近 200 条

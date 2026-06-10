@@ -5,10 +5,13 @@
 按 q 退出。
 """
 
+import logging
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 # 确保项目根目录在 sys.path 中（支持直接 python scheduler/main.py 运行）
@@ -21,6 +24,52 @@ from apscheduler.triggers.cron import CronTrigger
 from scheduler.dashboard import Dashboard, SharedState, WorkerState, EventLog
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+SCHEDULER_DIR = Path(__file__).resolve().parent
+
+# 模块级 logger 占位，main() 中通过 setup_logging() 替换
+logger = logging.getLogger("scheduler")
+logger.addHandler(logging.NullHandler())
+
+
+def setup_logging(backup_count: int = 7) -> logging.Logger:
+    """配置调度器日志：控制台(INFO) + run.log(INFO) + debug.log(DEBUG)，均每日轮转。"""
+    log_dir = SCHEDULER_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    global logger
+    logger = logging.getLogger("scheduler")
+    logger.setLevel(logging.DEBUG)
+    # 清除已有的 handler（包括 NullHandler）
+    logger.handlers.clear()
+
+    # 控制台：INFO
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(ch)
+
+    # run.log：INFO（关键事件）
+    fh_run = TimedRotatingFileHandler(
+        filename=str(log_dir / "run.log"),
+        when="midnight", interval=1, backupCount=backup_count, encoding="utf-8",
+    )
+    fh_run.setLevel(logging.INFO)
+    fh_run.setFormatter(fmt)
+    logger.addHandler(fh_run)
+
+    # debug.log：DEBUG（完整细节）
+    fh_debug = TimedRotatingFileHandler(
+        filename=str(log_dir / "debug.log"),
+        when="midnight", interval=1, backupCount=backup_count, encoding="utf-8",
+    )
+    fh_debug.setLevel(logging.DEBUG)
+    fh_debug.setFormatter(fmt)
+    logger.addHandler(fh_debug)
+
+    return logger
 
 
 def discover_workers(shared: SharedState):
@@ -62,12 +111,17 @@ def discover_workers(shared: SharedState):
 
 
 def make_worker_runner(worker_dir: Path, command: str, name: str, shared: SharedState):
-    """返回一个可被 scheduler 调用的函数，执行后会更新 shared state。"""
+    """返回一个可被 scheduler 调用的函数，执行后会更新 shared state。
+
+    任务异常退出时（非零退出码、超时、异常），会将完整的 stdout/stderr
+    及错误栈写入调度器自身的日志，便于排查。
+    """
 
     def run():
         ts = datetime.now().strftime("%H:%M:%S")
         shared.events.add(ts, name, "→ running")
         shared.update_worker(name, run_count=shared.workers[name].run_count + 1)
+        logger.debug("[%s] 开始执行: %s", name, command)
 
         try:
             result = subprocess.run(
@@ -87,23 +141,44 @@ def make_worker_runner(worker_dir: Path, command: str, name: str, shared: Shared
                     success_count=shared.workers[name].success_count + 1,
                 )
                 shared.events.add(ts_end, name, "completed successfully")
+                logger.info("[%s] 执行成功", name)
+                logger.debug("[%s] stdout:\n%s", name, result.stdout)
             else:
                 stderr_tail = result.stderr.strip().split("\n")[-1] if result.stderr.strip() else "no output"
                 shared.update_worker(name, last_run=ts_end, last_status="✗", fail_count=shared.workers[name].fail_count + 1)
                 shared.events.add(ts_end, name, f"failed (exit {result.returncode}): {stderr_tail[:60]}")
-        except subprocess.TimeoutExpired:
+                logger.error(
+                    "[%s] 异常退出 (exit=%d)\n--- STDOUT ---\n%s\n--- STDERR ---\n%s\n--- END ---",
+                    name, result.returncode, result.stdout or "(empty)", result.stderr or "(empty)",
+                )
+        except subprocess.TimeoutExpired as e:
             ts_end = datetime.now().strftime("%H:%M:%S")
             shared.update_worker(name, last_run=ts_end, last_status="⏱", fail_count=shared.workers[name].fail_count + 1)
             shared.events.add(ts_end, name, "timed out (1h)")
+            # TimeoutExpired 可能携带部分已捕获的输出（bytes）
+            timeout_stdout = e.stdout.decode("utf-8", errors="replace") if e.stdout else "(无输出)"
+            timeout_stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else "(无输出)"
+            logger.error(
+                "[%s] 执行超时 (1h)\n--- STDOUT (超时前) ---\n%s\n--- STDERR (超时前) ---\n%s\n--- END ---",
+                name, timeout_stdout, timeout_stderr,
+            )
         except Exception as e:
             ts_end = datetime.now().strftime("%H:%M:%S")
             shared.update_worker(name, last_run=ts_end, last_status="✗", fail_count=shared.workers[name].fail_count + 1)
             shared.events.add(ts_end, name, f"error: {e}")
+            logger.error(
+                "[%s] 调度器执行异常: %s\n%s",
+                name, e, traceback.format_exc(),
+            )
 
     return run
 
 
 def main():
+    # 初始化调度器自身日志（默认保留 7 天）
+    setup_logging(backup_count=7)
+    logger.info("调度器启动中...")
+
     shared = SharedState()
 
     # 发现 worker
@@ -142,6 +217,7 @@ def main():
 
         bg_scheduler.start()
         shared.events.add(now, "-", f"scheduler started with {len(scheduled)} workers")
+        logger.info("调度器已启动，%d 个 worker 已调度", len(scheduled))
 
     # 启动仪表盘（阻塞，直到按 q）
     try:
@@ -153,6 +229,7 @@ def main():
         shared.running = False
         if scheduled:
             bg_scheduler.shutdown(wait=False)
+        logger.info("调度器已停止")
         print("\nscheduler stopped.")
 
 

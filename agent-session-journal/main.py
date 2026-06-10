@@ -1130,6 +1130,8 @@ def process_session(
     category = llm_result.get("category", "未分类")
     if is_serious:
         category = "严肃工作"
+    elif category == "严肃工作":
+        category = "未分类"
     if not category or "/" in str(category):
         category = "未分类"
 
