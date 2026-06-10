@@ -10,10 +10,10 @@
 ## 使用方式
 
 ```bash
-python main.py                        # 处理所有符合条件的 session
-python main.py --dry-run              # 仅列出待处理 session，不调用 LLM
-python main.py --session-id <uuid>    # 仅处理指定 session
-python main.py --preview <uuid>       # 预览：调用 LLM 并输出到终端，不写文件
+uv run python agent-session-journal/main.py                        # 处理所有符合条件的 session
+uv run python agent-session-journal/main.py --dry-run              # 仅列出待处理 session，不调用 LLM
+uv run python agent-session-journal/main.py --session-id <uuid>    # 仅处理指定 session
+uv run python agent-session-journal/main.py --preview <uuid>       # 预览：调用 LLM 并输出到终端，不写文件
 ```
 
 ## 配置
