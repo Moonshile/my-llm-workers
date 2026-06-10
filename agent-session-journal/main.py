@@ -607,6 +607,17 @@ def get_existing_categories(output_dir: Path) -> list[str]:
 # LLM 调用
 # ============================================================================
 
+_PROMPT_TEMPLATE: Optional[str] = None
+
+
+def _load_prompt_template() -> str:
+    """加载 prompt.md 模板（首次调用后缓存）。"""
+    global _PROMPT_TEMPLATE
+    if _PROMPT_TEMPLATE is None:
+        _PROMPT_TEMPLATE = (TOOL_DIR / "prompt.md").read_text(encoding="utf-8")
+    return _PROMPT_TEMPLATE
+
+
 def build_summary_prompt(
     transcript: str,
     session_meta: dict,
@@ -614,120 +625,47 @@ def build_summary_prompt(
     existing_categories: list[str],
     is_update: bool,
 ) -> str:
-    """构造发送给 LLM 的 prompt。"""
+    """构造发送给 LLM 的 prompt（从 prompt.md 模板注入变量）。"""
     max_len = 6000
     truncated = transcript[:max_len]
     if len(transcript) > max_len:
         truncated += "\n\n... (对话已截断)"
 
-    session_id = session_meta["session_id"]
-    project_path = session_meta["project_path"]
-    created_date = session_meta.get("created_date", "unknown")
-    update_date = session_meta.get("mtime_date", "unknown")
-
-    sections = [
-        "请分析以下 Claude Code 会话记录，生成结构化的工作日志文档。",
-        "",
-        "## 会话信息",
-        f"- Session ID: {session_id}",
-        f"- 项目路径: {project_path}",
-        f"- 创建日期: {created_date}",
-        f"- 最后更新: {update_date}",
-        "",
-    ]
-
+    # 构造 context_section
     if is_update and existing_doc_content:
-        sections.extend([
-            "## 说明：这是增量更新",
-            "以下是**自上次处理后新增的对话内容**。请基于已有文档和新增内容，生成一份完整的更新版文档。",
-            "保持结构与已有文档一致，融合新旧内容。",
-            "",
-            "### 已有文档（参考）",
-            existing_doc_content[-2000:] if len(existing_doc_content) > 2000 else existing_doc_content,
-            "",
-            "### 新增对话内容",
-            truncated,
-        ])
+        ref = existing_doc_content[-2000:] if len(existing_doc_content) > 2000 else existing_doc_content
+        context_section = (
+            "## 说明：这是增量更新\n"
+            "以下是**自上次处理后新增的对话内容**。请基于已有文档和新增内容，"
+            "生成一份完整的更新版文档。保持结构与已有文档一致，融合新旧内容。\n\n"
+            f"### 已有文档（参考）\n{ref}\n\n"
+            f"### 新增对话内容\n{truncated}"
+        )
     else:
-        sections.append("## 对话内容")
-        sections.append(truncated)
+        context_section = f"## 对话内容\n{truncated}"
 
-    # 分类建议
+    # 构造 categories_section
     if existing_categories:
         cats_str = ", ".join(existing_categories)
-        sections.append("")
-        sections.append(f"## 备注：已有分类目录")
-        sections.append(f"输出目录中已有以下分类: {cats_str}")
-        sections.append("请优先从已有分类中选择 category，若无匹配则创建新分类。")
-        sections.append("分类应宽泛通用（如 前端开发、后端开发、工具脚本、AI应用、文档写作），")
-        sections.append("不要太具体（不要用项目名或具体功能名）。分类名只能是一级（不含 /）。")
+        categories_section = (
+            "## 备注：已有分类目录\n"
+            f"输出目录中已有以下分类: {cats_str}\n"
+            "请优先从已有分类中选择 category，若无匹配则创建新分类。\n"
+            "分类应宽泛通用（如 前端开发、后端开发、工具脚本、AI应用、文档写作），\n"
+            "不要太具体（不要用项目名或具体功能名）。分类名只能是一级（不含 /）。"
+        )
+    else:
+        categories_section = ""
 
-    sections.extend([
-        "",
-        "## 输出要求",
-        "",
-        "**核心原则：**",
-        "1. **严格基于对话事实**：只输出对话中实际出现的内容，禁止猜测、推断、补充",
-        "2. **重要性优先**：重点突出有价值的工作，琐碎操作一笔带过或不写",
-        "3. **宁缺毋滥**：字段无实质内容就留空，不填充凑数",
-        "",
-        "## 复杂度判断",
-        "",
-        "首先判断会话复杂度（只看对话中实际发生了什么）：",
-        "- **simple**：简单问答、配置修改、单步操作、问候/测试 → 一两句话讲清",
-        "- **complex**：包含技术决策、架构设计、反复调试、多步操作 → 完整分析",
-        "",
-        "## JSON 输出格式",
-        "",
-        "仅返回 JSON，不要 markdown 代码块，不要其他文字。",
-        "",
-        "### 所有模式必填字段",
-        "- `complexity`: `\"simple\"` 或 `\"complex\"`",
-        "- `title`: 描述性标题（简洁）",
-        "- `tags`: `[\"标签1\", \"标签2\"]`（3-5 个）",
-        "- `category`: 宽泛分类名（如 前端开发、后端开发、工具脚本），不要用项目名",
-        "- `summary`: 一两句话总结（simple 模式下这是唯一正文）",
-        "",
-        "### complex 模式额外字段",
-        "",
-        "**`overview`**（字符串数组）：按重要性降序列出工作项。",
-        "- 重要工作项单独列出，描述清楚",
-        "- 多个琐碎操作可聚合为一条（如「修复若干小问题」「调整代码风格」）",
-        "",
-        "**`complex_work`**（数组，仅收录有明确技术挑战的工作）：",
-        "准入标准：需要思考方案取舍、遇到非平凡的障碍、或做出了有意义的架构决策。",
-        "简单的 CRUD / 配置修改 / 照搬文档操作不算。每项含：",
-        '  - `topic`: 主题',
-        '  - `problem`: 遇到的问题（对话原文中的）',
-        '  - `solution`: 解决方案。**对话中未解决的写 `未解决`，不猜测**',
-        '  - `key_decisions`: 做出的关键决策（字符串数组，无则空数组）',
-        "",
-        "**`multi_turn`**（数组，仅收录真正反复尝试才解决的问题）：",
-        "准入标准（满足任一即可）：",
-        "- 方案失败→调整方向、多次报错→排查定位、需求反复变更",
-        "- 围绕同一问题的追问或讨论超过 5 轮",
-        "1-2 轮的简单追问不算。每项含：",
-        '  - `topic`: 主题',
-        '  - `rounds`: 大约轮次',
-        '  - `reason`: 多轮的根因（从对话事实中提取）',
-        '  - `suggestions`: 对话中实际提出的改进建议（字符串数组，无则空数组）',
-        "",
-        "**`best_practices`**（字符串数组）：",
-        "仅收录对话中**显式总结或确认的经验**（用户说「以后应该这样做」或类似表述）。",
-        "不要从工作过程中自己提炼最佳实践。无则空数组。",
-        "",
-        "**`notes`**（字符串）：",
-        "仅在有以下情况时填写：遗留未解决的问题、后续待办、用户明确的指示。",
-        "否则空字符串。",
-        "",
-        "## 格式约束",
-        "",
-        "- 数组字段（`overview`/`key_decisions`/`suggestions`/`best_practices`）每个元素是独立字符串",
-        "- 所有描述必须来自对话原文，不添加对话中未提及的信息",
-        "- simple 模式下 complex 专属字段设为空数组或空字符串",
-    ])
-
-    return "\n".join(sections)
+    template = _load_prompt_template()
+    return template.format(
+        session_id=session_meta["session_id"],
+        project_path=session_meta["project_path"],
+        created_date=session_meta.get("created_date", "unknown"),
+        update_date=session_meta.get("mtime_date", "unknown"),
+        context_section=context_section,
+        categories_section=categories_section,
+    )
 
 
 def call_llm(prompt: str, config: dict, label: str = "") -> dict:
