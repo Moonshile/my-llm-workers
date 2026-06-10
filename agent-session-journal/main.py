@@ -776,6 +776,13 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> Optiona
     return None
 
 
+def _encode_real_path(real_path: str) -> str:
+    """将真实文件系统路径编码为 session project_path 格式（每个 `/` 替换为 `-`）。"""
+    real_path = os.path.expanduser(real_path)
+    # /Users/x/proj → -Users-x-proj → /-Users-x-proj
+    return "/" + real_path.replace("/", "-")
+
+
 def _ensure_tags_include_serious(tags: list[str]) -> list[str]:
     """确保 tags 中包含 '严肃工作'（去重）。"""
     if "严肃工作" not in tags:
@@ -783,16 +790,20 @@ def _ensure_tags_include_serious(tags: list[str]) -> list[str]:
     return tags
 
 
-def _determine_category(tags: list[str], project_path: str, serious_paths: list[str]) -> str:
-    """根据标签和配置确定分类。"""
-    # 检查是否匹配严肃工作路径
-    expanded_project = os.path.expanduser(project_path)
+def _is_serious_work(project_path: str, serious_paths: list[str]) -> bool:
+    """
+    判断 session 的 project_path 是否匹配任一严肃工作路径。
+
+    都使用 Claude 的编码规则（`/` → `-`）后做前缀比对，避免编解码横线歧义。
+    """
     for sp in serious_paths:
-        expanded_sp = os.path.expanduser(sp)
-        if expanded_project.startswith(expanded_sp):
-            return "严肃工作"
-    # 从 tags 推断分类（由 LLM 在 metadata 中给出，这里由 LLM 输出决定）
-    return ""  # 返回空表示由 LLM 输出中的 category 决定
+        encoded_sp = _encode_real_path(sp)
+        if project_path == encoded_sp:
+            return True
+        # 检查是否为子路径：prefix 后必须紧跟 -（即原路径的 / 边界）
+        if project_path.startswith(encoded_sp + "-"):
+            return True
+    return False
 
 
 def _build_document_content(llm_result: dict, session_meta: dict, processing_time: str) -> str:
@@ -1165,13 +1176,7 @@ def process_session(
     if not isinstance(tags, list):
         tags = [tags] if tags else []
 
-    is_serious = False
-    expanded_project = os.path.expanduser(project_path)
-    for sp in serious_paths:
-        expanded_sp = os.path.expanduser(sp)
-        if expanded_project.startswith(expanded_sp):
-            is_serious = True
-            break
+    is_serious = _is_serious_work(project_path, serious_paths)
 
     if is_serious:
         tags = _ensure_tags_include_serious(tags)
@@ -1231,6 +1236,8 @@ def process_session(
         ]
         _write_daily_brief(daily_path, entries, created_date, category, processing_time)
         logger.info("  ✓ %s/%s-daily.md (%d sessions)", category, created_date, len(entries))
+        logger.info("[RESULT] session=%s complexity=simple category=%s file=%s/%s-daily.md entries=%d",
+                    sid, category, category, created_date, len(entries))
         return str(daily_path)
 
     else:
@@ -1286,6 +1293,8 @@ def process_session(
 
         new_path.write_text(full_doc, encoding="utf-8")
         logger.info("  ✓ %s/%s", category, filename)
+        logger.info("[RESULT] session=%s complexity=complex category=%s file=%s/%s",
+                    sid, category, category, filename)
         return str(new_path)
 
 

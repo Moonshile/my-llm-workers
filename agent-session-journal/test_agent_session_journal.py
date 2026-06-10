@@ -390,18 +390,27 @@ class TestTagHelpers:
         result = journal._ensure_tags_include_serious(tags)
         assert result.count("严肃工作") == 1
 
-    def test_determine_category_serious(self):
-        home = os.path.expanduser("~")
-        result = journal._determine_category(
-            ["任一"], f"{home}/proj/my-llm-workers", ["~/proj/my-llm-workers"]
-        )
-        assert result == "严肃工作"
+    def test_encode_real_path(self):
+        """真实路径编码为 session project_path 格式。"""
+        result = journal._encode_real_path("/Users/test/proj/foo")
+        assert result == "/-Users-test-proj-foo"
 
-    def test_determine_category_not_serious(self):
-        result = journal._determine_category(
-            ["任一"], "/Users/test/some-other-project", ["~/proj/my-llm-workers"]
-        )
-        assert result == ""
+    def test_encode_real_path_preserves_hyphens(self):
+        """路径中的横线在编码后保持不变（不解码即可比对）。"""
+        encoded = journal._encode_real_path("/Users/test/my-llm-workers")
+        # 编码后 /Users/test 变成 /-Users-test，my-llm-workers 保持原样
+        assert "/-Users-test-my-llm-workers" in encoded
+
+    def test_is_serious_work_matches_encoded(self):
+        """严肃工作匹配：双方编码后比对。"""
+        home = os.path.expanduser("~")
+        session_project_path = journal._encode_real_path(f"{home}/proj/my-llm-workers")
+        assert journal._is_serious_work(session_project_path, ["~/proj/my-llm-workers"])
+        # 不同项目不匹配
+        assert not journal._is_serious_work(session_project_path, ["~/other-project"])
+
+    def test_is_serious_work_not_matched(self):
+        assert not journal._is_serious_work("/-Users-test-other-project", ["~/proj/my-llm-workers"])
 
 
 # ============================================================
@@ -749,21 +758,19 @@ last_processed_timestamp: 9999999999.0
 
     def test_serious_work_tagging(self, tmp_path):
         """严肃工作路径自动打标签并放入对应子目录。"""
-        proj_dir = tmp_path / "sessions"
-        sess_dir = proj_dir / "-Users-test-proj-my-llm-workers"
-        sess_dir.mkdir(parents=True)
+        real_proj = tmp_path / "real-proj" / "my-llm-workers"
+        project_path_encoded = journal._encode_real_path(str(real_proj))
 
         events = [
             _make_jsonl_event("user", "工作内容", "2026-06-08T10:00:00Z"),
             _make_jsonl_event("assistant", "回复内容", "2026-06-08T10:01:00Z"),
         ]
-        jsonl = sess_dir / "serious-session.jsonl"
+        jsonl = tmp_path / "serious-session.jsonl"
         _write_jsonl(jsonl, events)
         yesterday = time.time() - 86400
         os.utime(jsonl, (yesterday, yesterday))
 
         output_dir = tmp_path / "output"
-        serious_path = str(tmp_path / "sessions" / "-Users-test-proj-my-llm-workers")
 
         config = {
             "api_base": "https://fake-api.example.com/v1",
@@ -771,7 +778,7 @@ last_processed_timestamp: 9999999999.0
             "model": "fake-model",
             "output_dir": output_dir,
             "max_chunk_chars": 8000,
-            "serious_work_paths": [serious_path],
+            "serious_work_paths": [str(real_proj)],
         }
 
         mock_llm_response = {
@@ -793,7 +800,7 @@ last_processed_timestamp: 9999999999.0
         with mock.patch.object(journal, "call_llm", mock_call_llm):
             session = {
                 "session_id": "serious-session",
-                "project_path": str(tmp_path / "sessions" / "-Users-test-proj-my-llm-workers"),
+                "project_path": project_path_encoded,
                 "jsonl_path": str(jsonl),
                 "mtime": yesterday,
                 "mtime_date": "2026-06-08",
