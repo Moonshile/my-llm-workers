@@ -112,14 +112,23 @@ def discover_workers(shared: SharedState):
 
 
 def make_worker_runner(worker_dir: Path, command: str, name: str,
-                       shared: SharedState, timeout: int = 3600):
+                       shared: SharedState, trigger: CronTrigger,
+                       timeout: int = 3600):
     """返回一个可被 scheduler 调用的函数，执行后会更新 shared state。
 
     任务异常退出时（非零退出码、超时、异常），会将完整的 stdout/stderr
     及错误栈写入调度器自身的日志，便于排查。
+
+    每次执行完成后重新计算 next_run，确保仪表盘中的 Next 列保持更新。
     """
 
     OUTPUT_CAP = 50000  # stdout/stderr 存储上限（字符数）
+
+    def _update_next_run():
+        """根据 cron trigger 重新计算并更新下次触发时间。"""
+        next_time = trigger.get_next_fire_time(None, datetime.now())
+        next_str = next_time.strftime("%H:%M") if next_time else "-"
+        shared.update_worker(name, next_run=next_str)
 
     def run():
         ts = datetime.now().strftime("%H:%M:%S")
@@ -154,6 +163,7 @@ def make_worker_runner(worker_dir: Path, command: str, name: str,
                     last_stdout=stdout_saved,
                     last_stderr=stderr_saved,
                 )
+                _update_next_run()
                 shared.events.add(ts_end, name, "completed successfully")
                 logger.info("[%s] 执行成功 (%.1fs)", name, duration)
                 logger.debug("[%s] stdout:\n%s", name, result.stdout)
@@ -170,6 +180,7 @@ def make_worker_runner(worker_dir: Path, command: str, name: str,
                     last_stdout=stdout_saved,
                     last_stderr=stderr_saved,
                 )
+                _update_next_run()
                 shared.events.add(ts_end, name, f"failed (exit {result.returncode}): {stderr_tail[:60]}")
                 logger.error(
                     "[%s] 异常退出 (exit=%d, %.1fs)\n--- STDOUT ---\n%s\n--- STDERR ---\n%s\n--- END ---",
@@ -192,6 +203,7 @@ def make_worker_runner(worker_dir: Path, command: str, name: str,
                 last_stdout=timeout_stdout[:OUTPUT_CAP],
                 last_stderr=timeout_stderr[:OUTPUT_CAP],
             )
+            _update_next_run()
             shared.events.add(ts_end, name, f"timed out ({timeout}s)")
             logger.error(
                 "[%s] 执行超时 (%ds, %.1fs)\n--- STDOUT (超时前) ---\n%s\n--- STDERR (超时前) ---\n%s\n--- END ---",
@@ -211,6 +223,7 @@ def make_worker_runner(worker_dir: Path, command: str, name: str,
                 last_stdout="",
                 last_stderr=traceback.format_exc(),
             )
+            _update_next_run()
             shared.events.add(ts_end, name, f"error: {e}")
             logger.error(
                 "[%s] 调度器执行异常: %s\n%s",
@@ -241,7 +254,7 @@ def main():
         bg_scheduler = BackgroundScheduler(daemon=True)
         for worker_dir, name, cron_expr, command, job_opts, worker_timeout in scheduled:
             trigger = CronTrigger.from_crontab(cron_expr)
-            runner = make_worker_runner(worker_dir, command, name, shared, timeout=worker_timeout)
+            runner = make_worker_runner(worker_dir, command, name, shared, trigger, timeout=worker_timeout)
             next_time = trigger.get_next_fire_time(None, datetime.now())
             next_str = next_time.strftime("%H:%M") if next_time else "-"
 
