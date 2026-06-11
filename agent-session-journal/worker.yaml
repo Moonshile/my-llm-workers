@@ -2,11 +2,22 @@ name: agent-session-journal
 description: 扫描 Claude Code session 并生成结构化工作日志
 language: python
 log_retention_days: 7
+timeout: 7200
 schedule:
   enabled: true
-  cron: "*/35 20 * * *"
+  cron: "*/55 23 * * *"
   job_options:
-    misfire_grace_time: 43200   # 12 小时，电脑从休眠恢复后仍可补执行
+    misfire_grace_time: 43200
     coalesce: true
     max_instances: 1
 run: "python main.py"
+
+# 非保密配置（保密的 API_KEY 仍留在 .env）
+output_dir: ~/Documents/claude-session-journals
+session_dirs:
+  - ~/.claude/sessions
+  - ~/.claude/projects
+max_chunk_chars: 500000
+chunk_overlap: 2000
+serious_work_paths:
+  - ~/code

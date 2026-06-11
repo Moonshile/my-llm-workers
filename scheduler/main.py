@@ -105,12 +105,14 @@ def discover_workers(shared: SharedState):
 
         if enabled:
             job_opts = schedule.get("job_options", {})
-            scheduled.append((entry, name, cron_expr, command, job_opts))
+            timeout = config.get("timeout", 3600)
+            scheduled.append((entry, name, cron_expr, command, job_opts, timeout))
 
     return scheduled
 
 
-def make_worker_runner(worker_dir: Path, command: str, name: str, shared: SharedState):
+def make_worker_runner(worker_dir: Path, command: str, name: str,
+                       shared: SharedState, timeout: int = 3600):
     """返回一个可被 scheduler 调用的函数，执行后会更新 shared state。
 
     任务异常退出时（非零退出码、超时、异常），会将完整的 stdout/stderr
@@ -130,7 +132,7 @@ def make_worker_runner(worker_dir: Path, command: str, name: str, shared: Shared
                 cwd=worker_dir,
                 capture_output=True,
                 text=True,
-                timeout=3600,
+                timeout=timeout,
             )
             ts_end = datetime.now().strftime("%H:%M:%S")
             if result.returncode == 0:
@@ -154,13 +156,13 @@ def make_worker_runner(worker_dir: Path, command: str, name: str, shared: Shared
         except subprocess.TimeoutExpired as e:
             ts_end = datetime.now().strftime("%H:%M:%S")
             shared.update_worker(name, last_run=ts_end, last_status="⏱", fail_count=shared.workers[name].fail_count + 1)
-            shared.events.add(ts_end, name, "timed out (1h)")
+            shared.events.add(ts_end, name, f"timed out ({timeout}s)")
             # TimeoutExpired 可能携带部分已捕获的输出（bytes）
             timeout_stdout = e.stdout.decode("utf-8", errors="replace") if e.stdout else "(无输出)"
             timeout_stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else "(无输出)"
             logger.error(
-                "[%s] 执行超时 (1h)\n--- STDOUT (超时前) ---\n%s\n--- STDERR (超时前) ---\n%s\n--- END ---",
-                name, timeout_stdout, timeout_stderr,
+                "[%s] 执行超时 (%ds)\n--- STDOUT (超时前) ---\n%s\n--- STDERR (超时前) ---\n%s\n--- END ---",
+                name, timeout, timeout_stdout, timeout_stderr,
             )
         except Exception as e:
             ts_end = datetime.now().strftime("%H:%M:%S")
@@ -193,9 +195,9 @@ def main():
     else:
         # 启动后台调度器
         bg_scheduler = BackgroundScheduler(daemon=True)
-        for worker_dir, name, cron_expr, command, job_opts in scheduled:
+        for worker_dir, name, cron_expr, command, job_opts, worker_timeout in scheduled:
             trigger = CronTrigger.from_crontab(cron_expr)
-            runner = make_worker_runner(worker_dir, command, name, shared)
+            runner = make_worker_runner(worker_dir, command, name, shared, timeout=worker_timeout)
             next_time = trigger.get_next_fire_time(None, datetime.now())
             next_str = next_time.strftime("%H:%M") if next_time else "-"
 

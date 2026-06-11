@@ -123,9 +123,11 @@ def load_worker_config() -> dict:
 
 
 def get_config() -> dict:
-    """加载 .env 并从环境变量读取配置，缺失则报错退出。"""
+    """加载配置：worker.yaml（非保密） + .env（保密），env 可覆盖 yaml。"""
     load_dotenv(TOOL_DIR / ".env")
+    worker_cfg = load_worker_config()
 
+    # 保密配置仅从 .env 读取
     api_base = os.environ.get("API_BASE")
     api_key = os.environ.get("API_KEY")
     model = os.environ.get("MODEL")
@@ -143,25 +145,46 @@ def get_config() -> dict:
         print("请在 agent-session-journal/.env 文件中配置，参考 .env.example")
         sys.exit(1)
 
-    output_dir_raw = os.environ.get("OUTPUT_DIR", "~/Documents/claude-session-journals")
+    # 非保密配置：优先 .env 覆盖，其次 worker.yaml，最后默认值
+    output_dir_raw = os.environ.get(
+        "OUTPUT_DIR",
+        worker_cfg.get("output_dir", "~/Documents/claude-session-journals"),
+    )
     output_dir = Path(os.path.expanduser(output_dir_raw))
 
-    session_dirs_raw = os.environ.get("SESSION_DIRS", "~/.claude/sessions,~/.claude/projects")
-    session_dirs = [
-        Path(os.path.expanduser(p.strip()))
-        for p in session_dirs_raw.split(",") if p.strip()
-    ]
+    yaml_session_dirs = worker_cfg.get("session_dirs", [])
+    if os.environ.get("SESSION_DIRS"):
+        session_dirs = [
+            Path(os.path.expanduser(p.strip()))
+            for p in os.environ["SESSION_DIRS"].split(",") if p.strip()
+        ]
+    elif yaml_session_dirs:
+        session_dirs = [Path(os.path.expanduser(p)) for p in yaml_session_dirs]
+    else:
+        session_dirs = [
+            Path(os.path.expanduser("~/.claude/sessions")),
+            Path(os.path.expanduser("~/.claude/projects")),
+        ]
 
-    max_chunk_chars = int(os.environ.get("MAX_CHUNK_CHARS", "8000"))
-    chunk_overlap = int(os.environ.get("CHUNK_OVERLAP", "1000"))
+    max_chunk_chars = int(os.environ.get(
+        "MAX_CHUNK_CHARS",
+        worker_cfg.get("max_chunk_chars", 8000),
+    ))
+    chunk_overlap = int(os.environ.get(
+        "CHUNK_OVERLAP",
+        worker_cfg.get("chunk_overlap", 1000),
+    ))
 
-    serious_paths_raw = os.environ.get("SERIOUS_WORK_PATHS", "")
-    serious_work_paths = []
-    if serious_paths_raw:
+    yaml_serious_paths = worker_cfg.get("serious_work_paths", [])
+    if os.environ.get("SERIOUS_WORK_PATHS"):
         serious_work_paths = [
             os.path.expanduser(p.strip())
-            for p in serious_paths_raw.split(",") if p.strip()
+            for p in os.environ["SERIOUS_WORK_PATHS"].split(",") if p.strip()
         ]
+    elif yaml_serious_paths:
+        serious_work_paths = [os.path.expanduser(p) for p in yaml_serious_paths]
+    else:
+        serious_work_paths = []
 
     return {
         "api_base": api_base,
