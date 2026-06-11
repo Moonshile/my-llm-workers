@@ -321,8 +321,8 @@ class TestExpandGroup:
         dst_path = [p for p in only_group["paths"] if "dst" in p][0]
         assert dst_path.endswith("only_here.md")
 
-    def test_invalid_directory_warning(self, tmp_path):
-        """目录不存在时记录 WARNING。"""
+    def test_missing_directory_auto_created(self, tmp_path):
+        """缺失的目录自动创建并继续同步。"""
         dir1 = self._create_dir_with_files(tmp_path, "dir1", {"a.md": "v1"})
         missing_dir = tmp_path / "nonexistent"
 
@@ -331,11 +331,31 @@ class TestExpandGroup:
             "pattern": "*.md",
             "paths": [str(dir1), str(missing_dir)],
         }
+        with mock.patch.object(fs.logger, "info") as mock_info:
+            result = fs.expand_group(group)
+            # 目录自动创建，有效目录变为 2
+            assert missing_dir.exists()
+            assert missing_dir.is_dir()
+            assert len(result) == 1  # a.md 子组
+            info_msgs = [c[0][0] for c in mock_info.call_args_list if c[0]]
+            assert any("已自动创建" in m for m in info_msgs)
+
+    def test_path_is_file_not_dir(self, tmp_path):
+        """路径存在但是文件而非目录时记录 WARNING 并跳过。"""
+        dir1 = self._create_dir_with_files(tmp_path, "dir1", {"a.md": "v1"})
+        a_file = tmp_path / "a_file"
+        a_file.write_text("not a dir")
+
+        group = {
+            "name": "docs",
+            "pattern": "*.md",
+            "paths": [str(dir1), str(a_file)],
+        }
         with mock.patch.object(fs.logger, "warning") as mock_warn:
             result = fs.expand_group(group)
             assert result == []  # 有效目录少于 2
             warn_msgs = [c[0][0] for c in mock_warn.call_args_list if c[0]]
-            assert any("不是目录或不存在" in m for m in warn_msgs)
+            assert any("不是目录" in m for m in warn_msgs)
 
     def test_fewer_than_two_valid_dirs(self, tmp_path):
         """有效目录少于 2 时返回空列表。"""

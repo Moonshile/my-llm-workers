@@ -317,14 +317,18 @@ def expand_group(group: dict) -> list[dict]:
         logger.warning(f"[{name}] 路径少于 2 个，跳过")
         return []
 
-    # 展开路径，筛选有效目录
+    # 展开路径，筛选有效目录（缺失的自动创建）
     dirs: list[Path] = []
     for p_str in path_strs:
         p = expand_path(p_str)
         if p.is_dir():
             dirs.append(p)
+        elif not p.exists():
+            p.mkdir(parents=True, exist_ok=True)
+            logger.info(f"[{name}] 目录不存在，已自动创建: {p}")
+            dirs.append(p)
         else:
-            logger.warning(f"[{name}] 路径不是目录或不存在: {p}")
+            logger.warning(f"[{name}] 路径存在但不是目录: {p}")
 
     if len(dirs) < 2:
         logger.warning(f"[{name}] 有效目录少于 2 个，跳过目录同步")
