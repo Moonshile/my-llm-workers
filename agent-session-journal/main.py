@@ -488,12 +488,12 @@ def format_frontmatter(meta: dict) -> str:
             else:
                 lines.append("tags: [" + ", ".join(val) + "]")
         elif key == "sessions":
-            # sessions 是一个 list[dict]，需要用 YAML 格式输出
             lines.append("sessions:")
             for s in val:
                 lines.append(f"  - session_id: {s['session_id']}")
                 lines.append(f"    title: {s['title']}")
                 lines.append(f"    project_path: {s.get('project_path', '')}")
+                lines.append(f"    category: {s.get('category', '')}")
                 lines.append(f"    last_processed_timestamp: {s['last_processed_timestamp']}")
         elif isinstance(val, str):
             lines.append(f"{key}: {val}")
@@ -554,12 +554,12 @@ def find_existing_document(output_dir: Path, session_id: str) -> Optional[Path]:
     return None
 
 
-def _find_daily_brief(output_dir: Path, date_str: str, category: str) -> Optional[Path]:
-    """查找指定日期和分类的 daily brief 文件（统一在 daily/ 子目录下）。"""
+def _find_daily_brief(output_dir: Path, date_str: str) -> Optional[Path]:
+    """查找指定日期的 daily brief 文件（每天一个，不分分类）。"""
     daily_dir = output_dir / "daily"
     if not daily_dir.exists():
         return None
-    target = daily_dir / f"{date_str}-{category}-daily.md"
+    target = daily_dir / f"{date_str}-daily.md"
     return target if target.exists() else None
 
 
@@ -586,6 +586,7 @@ def _read_daily_brief_sessions(daily_path: Path) -> tuple[dict, dict, str]:
                 "last_processed_timestamp": s.get("last_processed_timestamp", 0),
                 "title": s.get("title", ""),
                 "project_path": s.get("project_path", ""),
+                "category": s.get("category", ""),
             }
 
     # 提取 body（frontmatter 之后的内容）
@@ -606,7 +607,7 @@ def _find_session_in_daily_briefs(output_dir: Path, session_id: str) -> Optional
     daily_dir = output_dir / "daily"
     if not daily_dir.exists():
         return None
-    for md_file in daily_dir.glob("*-daily.md"):
+    for md_file in daily_dir.glob("*daily.md"):
         sessions_dict, fm, _ = _read_daily_brief_sessions(md_file)
         if session_id in sessions_dict:
             return {
@@ -921,31 +922,37 @@ def _synthesize_chunks(chunk_results: list[dict], config: dict, session_meta: di
 
 
 def _write_daily_brief(daily_path: Path, sessions_entries: list[dict],
-                       date_str: str, category: str, processing_time: str):
-    """写入 daily brief 文件。有实质内容的 session 独立展示，空 session 聚合到末尾。"""
-    sessions_entries.sort(key=lambda s: s.get("title", ""))
+                       date_str: str, processing_time: str):
+    """写入 daily brief 文件（每天一个）。有实质内容的按分类分组展示，空 session 聚合到末尾。"""
+    sessions_entries.sort(key=lambda s: (s.get("category", ""), s.get("title", "")))
 
     # 分离有意义和无内容的 session（summary 为空或极短视为空）
-    meaningful = []
+    meaningful: dict[str, list[dict]] = {}
     empty_sessions = []
     for s in sessions_entries:
         summary = s.get("summary", "").strip()
         if len(summary) < 10:
             empty_sessions.append(s)
         else:
-            meaningful.append(s)
+            cat = s.get("category", "未分类")
+            if cat not in meaningful:
+                meaningful[cat] = []
+            meaningful[cat].append(s)
 
-    # 构造 frontmatter（包含所有 session）
+    total = len(sessions_entries)
+    meaningful_count = sum(len(v) for v in meaningful.values())
+
+    # 构造 frontmatter
     fm_meta = {
         "title": f"每日简报 — {date_str}",
         "date": date_str,
         "type": "daily-brief",
-        "category": category,
         "sessions": [
             {
                 "session_id": s["session_id"],
                 "title": s["title"],
                 "project_path": s.get("project_path", ""),
+                "category": s.get("category", ""),
                 "last_processed_timestamp": s["last_processed_timestamp"],
             }
             for s in sessions_entries
@@ -957,24 +964,28 @@ def _write_daily_brief(daily_path: Path, sessions_entries: list[dict],
     parts = [
         f"# 每日简报 — {date_str}",
         "",
-        f"**分类**: {category}",
         f"**日期**: {date_str}",
         f"**处理时间**: {processing_time}",
-        f"**共 {len(sessions_entries)} 个会话**（有内容 {len(meaningful)}，空 {len(empty_sessions)}）",
+        f"**共 {total} 个会话**（有内容 {meaningful_count}，空 {len(empty_sessions)}）",
         "",
     ]
 
-    # 有意义的内容
-    for s in meaningful:
-        title = s.get("title", "Untitled")
-        sid = s.get("session_id", "")
-        proj = s.get("project_path", "")
-        summary = s.get("summary", "")
-        parts.append(f"## {title}")
-        parts.append(f"Session `{sid}` | 项目 `{proj}`")
-        parts.append("")
-        parts.append(summary)
-        parts.append("")
+    # 有意义的内容，按分类分组
+    for cat in sorted(meaningful.keys()):
+        entries = meaningful[cat]
+        if len(meaningful) > 1:
+            parts.append(f"## {cat}")
+            parts.append("")
+        for s in entries:
+            title = s.get("title", "Untitled")
+            sid = s.get("session_id", "")
+            proj = s.get("project_path", "")
+            summary = s.get("summary", "")
+            parts.append(f"### {title}")
+            parts.append(f"Session `{sid}` | 项目 `{proj}`")
+            parts.append("")
+            parts.append(summary)
+            parts.append("")
 
     # 空 session 聚合
     if empty_sessions:
@@ -1177,12 +1188,12 @@ def process_session(
             except OSError:
                 pass
 
-        # 读取或创建 daily brief（统一在 daily/ 子目录下）
-        daily_path = _find_daily_brief(output_dir, created_date, category)
+        # 读取或创建 daily brief（每天一个文件）
+        daily_path = _find_daily_brief(output_dir, created_date)
         if daily_path is None:
             daily_dir = output_dir / "daily"
             daily_dir.mkdir(parents=True, exist_ok=True)
-            daily_path = daily_dir / f"{created_date}-{category}-daily.md"
+            daily_path = daily_dir / f"{created_date}-daily.md"
 
         sessions_dict, _, _ = _read_daily_brief_sessions(daily_path) if daily_path.exists() else ({}, {}, "")
 
@@ -1191,6 +1202,7 @@ def process_session(
             "last_processed_timestamp": last_ts,
             "title": title,
             "project_path": project_path,
+            "category": category,
             "summary": llm_result.get("summary", ""),
         }
 
@@ -1200,15 +1212,16 @@ def process_session(
                 "session_id": k,
                 "title": v["title"],
                 "project_path": v.get("project_path", ""),
+                "category": v.get("category", ""),
                 "summary": v.get("summary", ""),
                 "last_processed_timestamp": v["last_processed_timestamp"],
             }
             for k, v in sessions_dict.items()
         ]
-        _write_daily_brief(daily_path, entries, created_date, category, processing_time)
-        logger.info("  ✓ daily/%s-%s-daily.md (%d sessions)", created_date, category, len(entries))
-        logger.info("[RESULT] session=%s complexity=simple category=%s file=daily/%s-%s-daily.md entries=%d | %s",
-                    sid, category, created_date, category, len(entries), _current_stats.summary())
+        _write_daily_brief(daily_path, entries, created_date, processing_time)
+        logger.info("  ✓ daily/%s-daily.md (%d sessions)", created_date, len(entries))
+        logger.info("[RESULT] session=%s complexity=simple category=%s file=daily/%s-daily.md entries=%d | %s",
+                    sid, category, created_date, len(entries), _current_stats.summary())
         return str(daily_path)
 
     else:
@@ -1225,12 +1238,13 @@ def process_session(
                             "session_id": k,
                             "title": v["title"],
                             "project_path": v.get("project_path", ""),
+                            "category": v.get("category", ""),
                             "summary": v.get("summary", ""),
                             "last_processed_timestamp": v["last_processed_timestamp"],
                         }
                         for k, v in sessions_dict.items()
                     ]
-                    _write_daily_brief(old_daily, entries, created_date, category, processing_time)
+                    _write_daily_brief(old_daily, entries, created_date, processing_time)
                 else:
                     try:
                         old_daily.unlink()

@@ -842,7 +842,7 @@ last_processed_timestamp: 9999999999.0
 
         assert result is not None
         result_path = Path(result)
-        assert result_path.name == "2026-06-08-工具脚本-daily.md"
+        assert result_path.name == "2026-06-08-daily.md"
         assert "daily" in str(result_path)
         content = result_path.read_text()
         fm = journal.parse_frontmatter(content)
@@ -950,7 +950,7 @@ last_processed_timestamp: 9999999999.0
         # 先创建一个已有 daily brief
         daily_dir = output_dir / "daily"
         daily_dir.mkdir(parents=True, exist_ok=True)
-        daily_path = daily_dir / "2026-06-08-测试-daily.md"
+        daily_path = daily_dir / "2026-06-08-daily.md"
         daily_path.write_text("""---
 title: 每日简报 — 2026-06-08
 date: 2026-06-08
@@ -1014,7 +1014,7 @@ Session `old-session` | 项目 `/test`
         daily_dir = output_dir / "daily"
         daily_dir.mkdir(parents=True)
 
-        daily_path = daily_dir / "2026-06-08-测试-daily.md"
+        daily_path = daily_dir / "2026-06-08-daily.md"
         daily_path.write_text("""---
 title: 每日简报
 date: 2026-06-08
@@ -1046,7 +1046,7 @@ sessions:
         daily_dir.mkdir(parents=True)
 
         # 创建 daily brief（不应被 find_existing_document 返回）
-        daily_path = daily_dir / "2026-06-08-测试-daily.md"
+        daily_path = daily_dir / "2026-06-08-daily.md"
         daily_path.write_text("""---
 title: x
 session_id: target-session
