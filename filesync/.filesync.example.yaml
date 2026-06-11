@@ -18,3 +18,11 @@ groups:
   #     - "/path/to/file1.txt"
   #     - "/path/to/file2.txt"
   #     - "/path/to/file3.txt"
+
+  # 目录级同步：指定 pattern 后所有 paths 视为目录，
+  # 按通配符匹配目录内文件，跨目录按文件名匹配后同步
+  # - name: "cli-commands"
+  #   pattern: "*.md"
+  #   paths:
+  #     - "~/proj/journal/.claude/commands/"
+  #     - "~/proj/diary/.claude/commands/"

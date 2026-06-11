@@ -251,6 +251,259 @@ class TestSyncGroup:
 
 
 # ============================================================
+# expand_group
+# ============================================================
+
+class TestExpandGroup:
+    """expand_group 函数测试 — 目录级同步展开。"""
+
+    def _create_dir_with_files(self, base: Path, dirname: str,
+                                files: dict[str, str],
+                                ages: dict[str, float] | None = None):
+        """在 base 下创建目录并填充文件。返回目录 Path。"""
+        d = base / dirname
+        d.mkdir(parents=True, exist_ok=True)
+        for fname, content in files.items():
+            f = d / fname
+            f.write_text(content, encoding="utf-8")
+            age = (ages or {}).get(fname, 0)
+            os.utime(f, (time.time() - age, time.time() - age))
+        return d
+
+    def test_no_pattern_returns_original(self):
+        """无 pattern 时原样返回。"""
+        group = {"name": "test", "paths": ["/tmp/a.txt", "/tmp/b.txt"]}
+        result = fs.expand_group(group)
+        assert result == [group]
+
+    def test_basic_directory_expansion(self, tmp_path):
+        """2 个目录各 2 个文件，展开为 2 个子组。"""
+        dir1 = self._create_dir_with_files(tmp_path, "dir1",
+            {"a.md": "v1", "b.md": "v1"})
+        dir2 = self._create_dir_with_files(tmp_path, "dir2",
+            {"a.md": "v2", "b.md": "v2"})
+
+        group = {
+            "name": "docs",
+            "pattern": "*.md",
+            "paths": [str(dir1), str(dir2)],
+        }
+        result = fs.expand_group(group)
+
+        assert len(result) == 2
+        names = {g["name"] for g in result}
+        assert names == {"docs/a.md", "docs/b.md"}
+
+        for g in result:
+            assert len(g["paths"]) == 2
+            # 每个子组的路径指向对应文件
+            assert any("dir1" in p for p in g["paths"])
+            assert any("dir2" in p for p in g["paths"])
+
+    def test_missing_file_in_one_dir(self, tmp_path):
+        """某文件只在一个目录存在时，缺失目录用占位路径。"""
+        dir1 = self._create_dir_with_files(tmp_path, "src",
+            {"shared.md": "v1", "only_here.md": "v1"})
+        dir2 = self._create_dir_with_files(tmp_path, "dst",
+            {"shared.md": "v2"})
+        # only_here.md 不在 dir2
+
+        group = {
+            "name": "docs",
+            "pattern": "*.md",
+            "paths": [str(dir1), str(dir2)],
+        }
+        result = fs.expand_group(group)
+
+        assert len(result) == 2
+        # only_here.md 子组：dir2 的路径应为占位路径
+        only_group = [g for g in result if g["name"] == "docs/only_here.md"][0]
+        dst_path = [p for p in only_group["paths"] if "dst" in p][0]
+        assert dst_path.endswith("only_here.md")
+
+    def test_invalid_directory_warning(self, tmp_path):
+        """目录不存在时记录 WARNING。"""
+        dir1 = self._create_dir_with_files(tmp_path, "dir1", {"a.md": "v1"})
+        missing_dir = tmp_path / "nonexistent"
+
+        group = {
+            "name": "docs",
+            "pattern": "*.md",
+            "paths": [str(dir1), str(missing_dir)],
+        }
+        with mock.patch.object(fs.logger, "warning") as mock_warn:
+            result = fs.expand_group(group)
+            assert result == []  # 有效目录少于 2
+            warn_msgs = [c[0][0] for c in mock_warn.call_args_list if c[0]]
+            assert any("不是目录或不存在" in m for m in warn_msgs)
+
+    def test_fewer_than_two_valid_dirs(self, tmp_path):
+        """有效目录少于 2 时返回空列表。"""
+        dir1 = self._create_dir_with_files(tmp_path, "dir1", {"a.md": "v1"})
+
+        group = {
+            "name": "docs",
+            "pattern": "*.md",
+            "paths": [str(dir1)],
+        }
+        with mock.patch.object(fs.logger, "warning") as mock_warn:
+            result = fs.expand_group(group)
+            assert result == []
+            warn_msgs = [c[0][0] for c in mock_warn.call_args_list if c[0]]
+            assert any("少于 2" in m for m in warn_msgs)
+
+    def test_pattern_no_match(self, tmp_path):
+        """pattern 无匹配文件时返回空列表。"""
+        dir1 = self._create_dir_with_files(tmp_path, "dir1", {"a.txt": "v1"})
+        dir2 = self._create_dir_with_files(tmp_path, "dir2", {"b.txt": "v1"})
+
+        group = {
+            "name": "docs",
+            "pattern": "*.md",  # 无 .md 文件
+            "paths": [str(dir1), str(dir2)],
+        }
+        with mock.patch.object(fs.logger, "warning") as mock_warn:
+            result = fs.expand_group(group)
+            assert result == []
+            warn_msgs = [c[0][0] for c in mock_warn.call_args_list if c[0]]
+            assert any("未匹配到任何文件" in m for m in warn_msgs)
+
+    def test_empty_paths(self):
+        """空 paths 返回空列表。"""
+        group = {"name": "docs", "pattern": "*.md", "paths": []}
+        with mock.patch.object(fs.logger, "warning") as mock_warn:
+            result = fs.expand_group(group)
+            assert result == []
+            warn_msgs = [c[0][0] for c in mock_warn.call_args_list if c[0]]
+            assert any("少于 2" in m for m in warn_msgs)
+
+    def test_group_without_name_defaults(self, tmp_path):
+        """没有 name 字段时使用 'unnamed'。"""
+        dir1 = self._create_dir_with_files(tmp_path, "dir1", {"a.md": "v1"})
+        dir2 = self._create_dir_with_files(tmp_path, "dir2", {"a.md": "v2"})
+
+        group = {"pattern": "*.md", "paths": [str(dir1), str(dir2)]}
+        with mock.patch.object(fs.logger, "info") as mock_info:
+            result = fs.expand_group(group)
+            assert len(result) == 1
+            assert result[0]["name"] == "unnamed/a.md"
+            # 确认目录同步 info 日志包含 unnamed
+            info_msgs = [c[0][0] for c in mock_info.call_args_list if c[0]]
+            assert any("unnamed" in m for m in info_msgs)
+
+
+# ============================================================
+# 目录同步集成测试
+# ============================================================
+
+class TestDirectorySyncIntegration:
+    """端到端目录同步测试。"""
+
+    def test_full_directory_sync(self, tmp_path):
+        """完整目录同步流程：2 目录 2 文件，同步 + 备份验证。"""
+        # dir1 中 a.md 为最新，dir2 中 b.md 为最新
+        dir1 = tmp_path / "dir1"
+        dir2 = tmp_path / "dir2"
+        dir1.mkdir()
+        dir2.mkdir()
+
+        # dir1: a.md 最新, b.md 旧
+        a1 = dir1 / "a.md"
+        b1 = dir1 / "b.md"
+        a1.write_text("a from dir1 latest")
+        b1.write_text("b old in dir1")
+        # dir2: a.md 旧, b.md 最新
+        a2 = dir2 / "a.md"
+        b2 = dir2 / "b.md"
+        a2.write_text("a old in dir2")
+        b2.write_text("b from dir2 latest")
+
+        os.utime(a1, (time.time(), time.time()))              # 最新
+        os.utime(b1, (time.time() - 10, time.time() - 10))   # 旧
+        os.utime(a2, (time.time() - 10, time.time() - 10))   # 旧
+        os.utime(b2, (time.time(), time.time()))              # 最新
+
+        group = {
+            "name": "cli",
+            "pattern": "*.md",
+            "paths": [str(dir1), str(dir2)],
+        }
+
+        with (
+            mock.patch.object(fs, "BACKUP_DIR", tmp_path / "backups"),
+        ):
+            sub_groups = fs.expand_group(group)
+            synced = 0
+            for sub in sub_groups:
+                if fs.sync_group(sub):
+                    synced += 1
+
+        # a 组：dir1 最新 → 覆盖 dir2
+        # b 组：dir2 最新 → 覆盖 dir1
+        assert synced == 2
+        assert a2.read_text() == "a from dir1 latest"
+        assert b1.read_text() == "b from dir2 latest"
+
+        # 验证备份
+        backups = list((tmp_path / "backups").iterdir())
+        assert len(backups) >= 2
+
+    def test_directory_sync_creates_missing(self, tmp_path):
+        """某目录缺少文件时自动创建。"""
+        dir1 = tmp_path / "src"
+        dir2 = tmp_path / "dst"
+        dir1.mkdir()
+        dir2.mkdir()
+
+        # dir1 有 new.md，dir2 没有
+        new1 = dir1 / "new.md"
+        new1.write_text("new content")
+        os.utime(new1, (time.time(), time.time()))
+
+        group = {
+            "name": "create-test",
+            "pattern": "*.md",
+            "paths": [str(dir1), str(dir2)],
+        }
+
+        with mock.patch.object(fs, "BACKUP_DIR", tmp_path / "backups"):
+            sub_groups = fs.expand_group(group)
+            for sub in sub_groups:
+                fs.sync_group(sub)
+
+        new2 = dir2 / "new.md"
+        assert new2.exists()
+        assert new2.read_text() == "new content"
+
+    def test_directory_sync_dry_run(self, tmp_path):
+        """dry-run 模式不实际修改文件。"""
+        dir1 = tmp_path / "dir1"
+        dir2 = tmp_path / "dir2"
+        dir1.mkdir()
+        dir2.mkdir()
+
+        a1 = dir1 / "a.md"
+        a2 = dir2 / "a.md"
+        a1.write_text("new")
+        a2.write_text("old")
+        os.utime(a1, (time.time(), time.time()))
+        os.utime(a2, (time.time() - 10, time.time() - 10))
+
+        group = {
+            "name": "dry-test",
+            "pattern": "*.md",
+            "paths": [str(dir1), str(dir2)],
+        }
+
+        sub_groups = fs.expand_group(group)
+        for sub in sub_groups:
+            fs.sync_group(sub, dry_run=True)
+
+        # dir2 内容不变
+        assert a2.read_text() == "old"
+
+
+# ============================================================
 # _safe_path
 # ============================================================
 

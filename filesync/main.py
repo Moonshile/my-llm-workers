@@ -150,7 +150,8 @@ def backup_file(src_path: Path, group_name: str) -> Optional[Path]:
     now = datetime.now()
     ts = now.strftime("%Y%m%d-%H%M%S")
     safe = _safe_path(src_path)
-    backup_name = f"{ts}_{group_name}__{safe}.bak"
+    safe_group = group_name.replace("/", "_")
+    backup_name = f"{ts}_{safe_group}__{safe}.bak"
     backup_path = BACKUP_DIR / backup_name
 
     shutil.copy2(src_path, backup_path)
@@ -295,6 +296,75 @@ def sync_group(group: dict, dry_run: bool = False) -> bool:
     return synced
 
 
+# ---------- 目录展开 ----------
+
+def expand_group(group: dict) -> list[dict]:
+    """
+    展开目录同步组为文件级子组列表。
+
+    如果 group 包含 `pattern` 字段，将所有 paths 视为目录，
+    用 glob 扫描匹配文件，按文件名跨目录匹配后生成子组。
+    无 pattern 时原样返回。
+    """
+    pattern = group.get("pattern")
+    if not pattern:
+        return [group]
+
+    name = group.get("name", "unnamed")
+    path_strs = group.get("paths", [])
+
+    if len(path_strs) < 2:
+        logger.warning(f"[{name}] 路径少于 2 个，跳过")
+        return []
+
+    # 展开路径，筛选有效目录
+    dirs: list[Path] = []
+    for p_str in path_strs:
+        p = expand_path(p_str)
+        if p.is_dir():
+            dirs.append(p)
+        else:
+            logger.warning(f"[{name}] 路径不是目录或不存在: {p}")
+
+    if len(dirs) < 2:
+        logger.warning(f"[{name}] 有效目录少于 2 个，跳过目录同步")
+        return []
+
+    # 扫描每个目录中匹配 pattern 的文件
+    dir_files: dict[Path, dict[str, Path]] = {}
+    all_filenames: set[str] = set()
+    for d in dirs:
+        files: dict[str, Path] = {}
+        for f in sorted(d.glob(pattern)):
+            if f.is_file():
+                files[f.name] = f
+                all_filenames.add(f.name)
+        dir_files[d] = files
+
+    if not all_filenames:
+        logger.warning(f"[{name}] pattern '{pattern}' 未匹配到任何文件")
+        return []
+
+    # 按文件名构建子组
+    sub_groups: list[dict] = []
+    for fname in sorted(all_filenames):
+        sub_paths: list[str] = []
+        for d in dirs:
+            if fname in dir_files[d]:
+                sub_paths.append(str(dir_files[d][fname]))
+            else:
+                # 文件缺失，使用占位路径（后续 sync_group 会自动创建）
+                sub_paths.append(str(d / fname))
+        sub_groups.append({
+            "name": f"{name}/{fname}",
+            "paths": sub_paths,
+        })
+
+    logger.info(f"[{name}] 目录同步: 匹配到 {len(all_filenames)} 个文件, "
+                f"分布在 {len(dirs)} 个目录")
+    return sub_groups
+
+
 # ---------- CLI ----------
 
 def main():
@@ -335,10 +405,12 @@ def main():
 
     for group in groups:
         try:
-            if sync_group(group, dry_run=args.dry_run):
-                synced_count += 1
-            else:
-                skip_count += 1
+            sub_groups = expand_group(group)
+            for sub in sub_groups:
+                if sync_group(sub, dry_run=args.dry_run):
+                    synced_count += 1
+                else:
+                    skip_count += 1
         except Exception:
             logger.error(
                 f"[{group.get('name', 'unnamed')}] 同步出错",

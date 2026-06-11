@@ -7,6 +7,7 @@
 ## 约定
 
 - 每个工具目录必须包含 `worker.yaml` 和 `README.md`
+- **功能变更必须同步更新 README.md**：任何工具的功能、配置项、CLI 参数、行为逻辑发生变更时，必须同步更新该工具的 `README.md`，确保文档与实际行为一致
 - 工具目录命名用 kebab-case
 - 调度器在 `scheduler/` 目录，提供 curses 仪表盘（类似 `top`），`make run` 启动
 - `make test` 运行全部测试

@@ -79,3 +79,32 @@ uv run python filesync/main.py
 `.filesync.yaml` 不提交到版本管理（已在 `.gitignore` 中忽略）。
 
 `.filesync.example.yaml` 是模板文件，可提交，方便其他开发者参考格式。
+
+### 文件级同步
+
+每组 `paths` 列出具体文件路径，组内按 mtime 最新者覆盖其他：
+
+```yaml
+groups:
+  - name: "zshrc"
+    paths:
+      - "~/.zshrc"
+      - "~/dotfiles/zsh/.zshrc"
+```
+
+### 目录级同步
+
+新增 `pattern` 字段后，所有 `paths` 视为目录，自动扫描目录内匹配 glob 的文件，按文件名跨目录匹配后同步：
+
+```yaml
+groups:
+  - name: "cli-commands"
+    pattern: "*.md"
+    paths:
+      - "~/proj/journal/.claude/commands/"
+      - "~/proj/diary/.claude/commands/"
+```
+
+- `pattern` 支持 `pathlib.Path.glob()` 的通配符，如 `*.md`、`*.txt`、`*.json`
+- 按文件名（`Path.name`）跨目录匹配：`dir1/foo.md` 对应 `dir2/foo.md`
+- 某目录缺少匹配文件时，自动从其他目录的最新文件创建
