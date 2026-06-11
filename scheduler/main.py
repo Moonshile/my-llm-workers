@@ -119,11 +119,14 @@ def make_worker_runner(worker_dir: Path, command: str, name: str,
     及错误栈写入调度器自身的日志，便于排查。
     """
 
+    OUTPUT_CAP = 50000  # stdout/stderr 存储上限（字符数）
+
     def run():
         ts = datetime.now().strftime("%H:%M:%S")
         shared.events.add(ts, name, "→ running")
-        shared.update_worker(name, run_count=shared.workers[name].run_count + 1)
+        shared.update_worker(name, run_count=shared.workers[name].run_count + 1, running=True)
         logger.debug("[%s] 开始执行: %s", name, command)
+        t_start = time.monotonic()
 
         try:
             result = subprocess.run(
@@ -134,39 +137,80 @@ def make_worker_runner(worker_dir: Path, command: str, name: str,
                 text=True,
                 timeout=timeout,
             )
+            duration = time.monotonic() - t_start
             ts_end = datetime.now().strftime("%H:%M:%S")
+            stdout_saved = (result.stdout or "")[:OUTPUT_CAP]
+            stderr_saved = (result.stderr or "")[:OUTPUT_CAP]
+
             if result.returncode == 0:
                 shared.update_worker(
                     name,
                     last_run=ts_end,
                     last_status="✓",
                     success_count=shared.workers[name].success_count + 1,
+                    running=False,
+                    last_duration=duration,
+                    last_returncode=0,
+                    last_stdout=stdout_saved,
+                    last_stderr=stderr_saved,
                 )
                 shared.events.add(ts_end, name, "completed successfully")
-                logger.info("[%s] 执行成功", name)
+                logger.info("[%s] 执行成功 (%.1fs)", name, duration)
                 logger.debug("[%s] stdout:\n%s", name, result.stdout)
             else:
                 stderr_tail = result.stderr.strip().split("\n")[-1] if result.stderr.strip() else "no output"
-                shared.update_worker(name, last_run=ts_end, last_status="✗", fail_count=shared.workers[name].fail_count + 1)
+                shared.update_worker(
+                    name,
+                    last_run=ts_end,
+                    last_status="✗",
+                    fail_count=shared.workers[name].fail_count + 1,
+                    running=False,
+                    last_duration=duration,
+                    last_returncode=result.returncode,
+                    last_stdout=stdout_saved,
+                    last_stderr=stderr_saved,
+                )
                 shared.events.add(ts_end, name, f"failed (exit {result.returncode}): {stderr_tail[:60]}")
                 logger.error(
-                    "[%s] 异常退出 (exit=%d)\n--- STDOUT ---\n%s\n--- STDERR ---\n%s\n--- END ---",
-                    name, result.returncode, result.stdout or "(empty)", result.stderr or "(empty)",
+                    "[%s] 异常退出 (exit=%d, %.1fs)\n--- STDOUT ---\n%s\n--- STDERR ---\n%s\n--- END ---",
+                    name, result.returncode, duration, result.stdout or "(empty)", result.stderr or "(empty)",
                 )
         except subprocess.TimeoutExpired as e:
+            duration = time.monotonic() - t_start
             ts_end = datetime.now().strftime("%H:%M:%S")
-            shared.update_worker(name, last_run=ts_end, last_status="⏱", fail_count=shared.workers[name].fail_count + 1)
-            shared.events.add(ts_end, name, f"timed out ({timeout}s)")
             # TimeoutExpired 可能携带部分已捕获的输出（bytes）
-            timeout_stdout = e.stdout.decode("utf-8", errors="replace") if e.stdout else "(无输出)"
-            timeout_stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else "(无输出)"
+            timeout_stdout = e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
+            timeout_stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+            shared.update_worker(
+                name,
+                last_run=ts_end,
+                last_status="⏱",
+                fail_count=shared.workers[name].fail_count + 1,
+                running=False,
+                last_duration=duration,
+                last_returncode=-1,
+                last_stdout=timeout_stdout[:OUTPUT_CAP],
+                last_stderr=timeout_stderr[:OUTPUT_CAP],
+            )
+            shared.events.add(ts_end, name, f"timed out ({timeout}s)")
             logger.error(
-                "[%s] 执行超时 (%ds)\n--- STDOUT (超时前) ---\n%s\n--- STDERR (超时前) ---\n%s\n--- END ---",
-                name, timeout, timeout_stdout, timeout_stderr,
+                "[%s] 执行超时 (%ds, %.1fs)\n--- STDOUT (超时前) ---\n%s\n--- STDERR (超时前) ---\n%s\n--- END ---",
+                name, timeout, duration, timeout_stdout or "(无输出)", timeout_stderr or "(无输出)",
             )
         except Exception as e:
+            duration = time.monotonic() - t_start
             ts_end = datetime.now().strftime("%H:%M:%S")
-            shared.update_worker(name, last_run=ts_end, last_status="✗", fail_count=shared.workers[name].fail_count + 1)
+            shared.update_worker(
+                name,
+                last_run=ts_end,
+                last_status="✗",
+                fail_count=shared.workers[name].fail_count + 1,
+                running=False,
+                last_duration=duration,
+                last_returncode=-2,
+                last_stdout="",
+                last_stderr=traceback.format_exc(),
+            )
             shared.events.add(ts_end, name, f"error: {e}")
             logger.error(
                 "[%s] 调度器执行异常: %s\n%s",

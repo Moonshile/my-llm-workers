@@ -1,6 +1,37 @@
 import time
 import threading
-from scheduler.dashboard import SharedState, WorkerState, EventLog
+from scheduler.dashboard import SharedState, WorkerState, EventLog, Dashboard, SPINNER
+
+
+# ============================================================
+# SPINNER
+# ============================================================
+
+def test_spinner_not_empty():
+    assert len(SPINNER) > 0
+
+
+# ============================================================
+# Dashboard._format_duration
+# ============================================================
+
+def test_format_duration_zero():
+    assert Dashboard._format_duration(0) == "-"
+    assert Dashboard._format_duration(-1) == "-"
+
+
+def test_format_duration_seconds():
+    assert Dashboard._format_duration(1.0) == "1.0s"
+    assert Dashboard._format_duration(59.9) == "59.9s"
+
+
+def test_format_duration_minutes():
+    assert Dashboard._format_duration(60) == "1m00s"
+    assert Dashboard._format_duration(125) == "2m05s"
+
+
+def test_format_duration_hours():
+    assert Dashboard._format_duration(3661) == "1h01m"
 
 
 # ============================================================
@@ -89,3 +120,37 @@ def test_worker_state_defaults():
     assert w.run_count == 0
     assert w.success_count == 0
     assert w.fail_count == 0
+    # P0/P1 新增字段
+    assert w.running is False
+    assert w.last_duration == 0.0
+    assert w.last_returncode == 0
+    assert w.last_stdout == ""
+    assert w.last_stderr == ""
+
+
+def test_worker_state_running_flag():
+    w = WorkerState(name="test", cron="* * * * *")
+    assert w.running is False
+    w.running = True
+    assert w.running is True
+
+
+def test_shared_state_update_new_fields():
+    state = SharedState()
+    state.workers["test"] = WorkerState(name="test", cron="* * * * *")
+
+    state.update_worker(
+        "test",
+        running=True,
+        last_duration=3.5,
+        last_returncode=1,
+        last_stdout="hello world",
+        last_stderr="error msg",
+    )
+
+    w = state.workers["test"]
+    assert w.running is True
+    assert w.last_duration == 3.5
+    assert w.last_returncode == 1
+    assert w.last_stdout == "hello world"
+    assert w.last_stderr == "error msg"
