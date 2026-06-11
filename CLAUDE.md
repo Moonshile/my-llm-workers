@@ -19,8 +19,8 @@
 - 每个工具应包含 `test_*.py`（推荐 `test_<工具名>.py` 避免多工具同名冲突），使用 pytest 编写单元测试
 - 测试覆盖：纯函数 + API mock + 集成测试（临时文件目录）
 - 测试中需 mock `load_dotenv`（`mock.patch("main.load_dotenv")`），禁止在测试中触碰真实 `.env` 文件
-- 每个工具应将 LLM 配置放在 `.env` 文件中，不放在 `worker.yaml` 中
-- 需提供 `.env.example` 作为配置模板，`.env` 已被 `.gitignore` 忽略
+- 每个工具目录包含 `.env`（存放保密/隐私项：API 密钥 + 文件路径等个人信息）和 `.env.example`（模板），`.env` 已被 `.gitignore` 忽略
+- 配置文件分离原则：`.env` 放隐私项（密钥、路径），`worker.yaml` 放非敏感项（阈值、开关、计数器）。参考 `agent-session-journal` 的实现
 
 ### 日志规范
 
@@ -79,7 +79,7 @@ run: "python main.py"
 ## LLM 调用
 
 - 所有 LLM API 调用统一使用 **LiteLLM**（`import litellm`），通过 `litellm.completion()` 发起
-- LLM 配置（`API_BASE`、`API_KEY`、`MODEL`）放在工具目录的 `.env` 中，不放在 `worker.yaml`
+- LLM 配置（`API_BASE`、`API_KEY`、`MODEL`）属于保密项，放在工具目录的 `.env` 中。其他非保密配置放在 `worker.yaml`
 - 每次调用在 INFO 日志输出 model、prompt 长度、token 用量和 cost；DEBUG 日志输出完整计费明细
 - 参考实现：`agent-session-journal/main.py` 的 `call_llm` 函数
 

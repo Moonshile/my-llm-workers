@@ -2,7 +2,7 @@
 为指定目录下的所有 .md 文件递归添加 YAML frontmatter 元数据。
 
 使用 LLM（OpenAI 兼容 API）根据内容智能生成 title、date、tags。
-配置通过 .env 文件或环境变量注入，不放在 worker.yaml 中。
+保密配置（API_KEY 等）通过 .env 注入，非保密配置放在 worker.yaml 中。
 
 用法：
     python main.py                               # 从 .env 的 WATCH_PATHS 读取目录
@@ -65,13 +65,14 @@ def setup_logging(backup_count: int = 7) -> logging.Logger:
     return logger
 
 
-# ---------- 配置（全部来自环境变量） ----------
+# ---------- 配置 ----------
 
 def get_config() -> dict:
-    """加载 .env 并从环境变量读取 LLM 配置，缺失则报错退出。"""
+    """加载配置：worker.yaml（非保密） + .env（保密），env 可覆盖 yaml。"""
     load_dotenv(TOOL_DIR / ".env")
+    worker_cfg = load_worker_config()
 
-    watch_paths_raw = os.environ.get("WATCH_PATHS", "")
+    # 保密配置仅从 .env 读取
     api_base = os.environ.get("API_BASE")
     api_key = os.environ.get("API_KEY")
     model = os.environ.get("MODEL")
@@ -89,17 +90,23 @@ def get_config() -> dict:
         print("请在 md-frontmatter/.env 文件中配置，参考 .env.example")
         sys.exit(1)
 
-    # 解析 WATCH_PATHS（展开 ~ 和环境变量）
+    # 隐私配置（路径）：仅从 .env 读取
+    watch_paths_raw = os.environ.get("WATCH_PATHS", "")
     watch_paths = []
     if watch_paths_raw:
         watch_paths = [os.path.expanduser(p.strip()) for p in watch_paths_raw.split(",") if p.strip()]
 
-    # 最短内容长度（低于此值跳过，防止不完整的文件过早打标）
-    min_content_length = int(os.environ.get("MIN_CONTENT_LENGTH", "200"))
+    # 非保密配置：优先 .env 覆盖，其次 worker.yaml，最后默认值
+    min_content_length = int(os.environ.get(
+        "MIN_CONTENT_LENGTH",
+        worker_cfg.get("min_content_length", 200),
+    ))
 
-    # 草稿标记（逗号分隔，文件头部包含任一标记则跳过）
-    draft_markers_raw = os.environ.get("DRAFT_MARKERS", "<!-- draft -->,<!-- wip -->")
-    draft_markers = [m.strip() for m in draft_markers_raw.split(",") if m.strip()]
+    draft_markers_raw = os.environ.get("DRAFT_MARKERS", "")
+    if draft_markers_raw:
+        draft_markers = [m.strip() for m in draft_markers_raw.split(",") if m.strip()]
+    else:
+        draft_markers = worker_cfg.get("draft_markers", ["<!-- draft -->", "<!-- wip -->"])
 
     return {
         "api_base": api_base,

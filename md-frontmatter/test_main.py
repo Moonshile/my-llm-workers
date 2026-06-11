@@ -500,22 +500,24 @@ def test_process_directory_draft_overrides_missing_tags(temp_posts_dir):
 # ============================================================
 
 def test_get_config_watch_paths_empty():
-    """未设置 WATCH_PATHS 时返回空列表。"""
+    """未设置 WATCH_PATHS 且 worker.yaml 无配置时返回空列表。"""
     with mock.patch("main.load_dotenv"):  # 阻止读取 .env 文件
-        with mock.patch.dict(os.environ, {"API_BASE": "b", "API_KEY": "k", "MODEL": "m"}, clear=True):
-            cfg = fm.get_config()
+        with mock.patch("main.load_worker_config", return_value={}):
+            with mock.patch.dict(os.environ, {"API_BASE": "b", "API_KEY": "k", "MODEL": "m"}, clear=True):
+                cfg = fm.get_config()
     assert cfg["watch_paths"] == []
 
 
 def test_get_config_watch_paths_parsed():
-    """WATCH_PATHS 按逗号分割并去空格。"""
+    """WATCH_PATHS 按逗号分割并去空格（env 覆盖 yaml）。"""
     env = {
         "API_BASE": "b", "API_KEY": "k", "MODEL": "m",
         "WATCH_PATHS": "  /a/b  , /c/d , /e/f ",
     }
     with mock.patch("main.load_dotenv"):  # 阻止读取 .env 文件
-        with mock.patch.dict(os.environ, env, clear=True):
-            cfg = fm.get_config()
+        with mock.patch("main.load_worker_config", return_value={}):
+            with mock.patch.dict(os.environ, env, clear=True):
+                cfg = fm.get_config()
     assert cfg["watch_paths"] == ["/a/b", "/c/d", "/e/f"]
 
 
@@ -526,8 +528,9 @@ def test_get_config_watch_paths_expands_tilde():
         "WATCH_PATHS": "~/proj/posts",
     }
     with mock.patch("main.load_dotenv"):  # 阻止读取 .env 文件
-        with mock.patch.dict(os.environ, env, clear=True):
-            cfg = fm.get_config()
+        with mock.patch("main.load_worker_config", return_value={}):
+            with mock.patch.dict(os.environ, env, clear=True):
+                cfg = fm.get_config()
     assert cfg["watch_paths"] == [os.path.expanduser("~/proj/posts")]
     assert not cfg["watch_paths"][0].startswith("~")
 
@@ -536,8 +539,9 @@ def test_get_config_draft_markers_default():
     """未设置 DRAFT_MARKERS 时使用默认值。"""
     env = {"API_BASE": "b", "API_KEY": "k", "MODEL": "m"}
     with mock.patch("main.load_dotenv"):
-        with mock.patch.dict(os.environ, env, clear=True):
-            cfg = fm.get_config()
+        with mock.patch("main.load_worker_config", return_value={}):
+            with mock.patch.dict(os.environ, env, clear=True):
+                cfg = fm.get_config()
     assert cfg["draft_markers"] == ["<!-- draft -->", "<!-- wip -->"]
 
 
@@ -548,8 +552,9 @@ def test_get_config_draft_markers_custom():
         "DRAFT_MARKERS": "<!-- draft -->, <!-- todo -->,<!-- wip -->",
     }
     with mock.patch("main.load_dotenv"):
-        with mock.patch.dict(os.environ, env, clear=True):
-            cfg = fm.get_config()
+        with mock.patch("main.load_worker_config", return_value={}):
+            with mock.patch.dict(os.environ, env, clear=True):
+                cfg = fm.get_config()
     assert cfg["draft_markers"] == ["<!-- draft -->", "<!-- todo -->", "<!-- wip -->"]
 
 
@@ -557,8 +562,9 @@ def test_get_config_min_content_length_default():
     """未设置 MIN_CONTENT_LENGTH 时默认为 200。"""
     env = {"API_BASE": "b", "API_KEY": "k", "MODEL": "m"}
     with mock.patch("main.load_dotenv"):
-        with mock.patch.dict(os.environ, env, clear=True):
-            cfg = fm.get_config()
+        with mock.patch("main.load_worker_config", return_value={}):
+            with mock.patch.dict(os.environ, env, clear=True):
+                cfg = fm.get_config()
     assert cfg["min_content_length"] == 200
 
 
@@ -569,8 +575,9 @@ def test_get_config_min_content_length_custom():
         "MIN_CONTENT_LENGTH": "500",
     }
     with mock.patch("main.load_dotenv"):
-        with mock.patch.dict(os.environ, env, clear=True):
-            cfg = fm.get_config()
+        with mock.patch("main.load_worker_config", return_value={}):
+            with mock.patch.dict(os.environ, env, clear=True):
+                cfg = fm.get_config()
     assert cfg["min_content_length"] == 500
 
 

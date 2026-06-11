@@ -5,19 +5,13 @@ log_retention_days: 7
 timeout: 28800
 schedule:
   enabled: true
-  cron: "*/2 10 * * *"
+  cron: "* 10 * * *"
   job_options:
     misfire_grace_time: 43200
     coalesce: true
     max_instances: 1
 run: "python main.py"
 
-# 非保密配置（保密的 API_KEY 仍留在 .env）
-output_dir: /Users/duankaiqiang/proj/journal/docs/posts/agent-sessions
-session_dirs:
-  - ~/.claude/sessions
-  - ~/.claude/projects
+# 非保密配置（保密/隐私配置在 .env 中）
 max_chunk_chars: 500000
 chunk_overlap: 2000
-serious_work_paths:
-  - /Users/duankaiqiang/code

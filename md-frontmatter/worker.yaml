@@ -10,3 +10,9 @@ schedule:
     coalesce: true
     max_instances: 1
 run: "python main.py"
+
+# 非保密配置（保密/隐私配置在 .env 中）
+min_content_length: 200
+draft_markers:
+  - "<!-- draft -->"
+  - "<!-- wip -->"
