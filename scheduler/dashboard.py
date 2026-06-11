@@ -212,8 +212,16 @@ class Dashboard:
             elif key == ord("r"):
                 pass                                   # 手动刷新（自然重绘）
             elif key == curses.KEY_RESIZE:
-                # 终端尺寸变化：同步 curses 模块级变量，重置滚动偏移避免越界
+                # 终端尺寸变化：同步模块变量 + 重建内部窗口结构
                 curses.update_lines_cols()
+                if hasattr(curses, 'resize_term'):
+                    try:
+                        curses.resize_term(*self.stdscr.getmaxyx())
+                    except Exception:
+                        pass
+                # 立即清屏重绘，避免残留
+                self.stdscr.clear()
+                self.stdscr.refresh()
                 self.log_scroll_offset = 0
                 self.detail_scroll = 0
 
@@ -231,7 +239,7 @@ class Dashboard:
     def _draw(self):
         if not self.stdscr:
             return
-        self.stdscr.erase()
+        self.stdscr.clear()
         max_y, max_x = self.stdscr.getmaxyx()
         if max_y < 10 or max_x < 60:
             self._write(0, 0, "Terminal too small", curses.A_BOLD)
@@ -240,28 +248,29 @@ class Dashboard:
         header_h = 2
         table_title_h = 1
         worker_count = len(self.shared.get_workers_snapshot())
-        table_rows = max(1, min(worker_count, max_y - 12))
-        footer_h = 1
+        # 表格至少 1 行，至多留 12 行给下方区域
+        table_rows = max(1, min(worker_count, max(1, max_y - 12)))
+        footer_lines = 2  # 分隔线 + 帮助文字
 
-        # 顶部标题栏
+        # 顶部标题栏（行 0-1）
         self._draw_header(0, max_x)
 
-        # Worker 表格
+        # Worker 表格（行 2 开始）
         table_start = header_h
         self._draw_table_header(table_start, max_x)
         self._draw_table_body(table_start + table_title_h, max_x, table_rows)
 
-        # 下方：详情面板或事件日志
+        # 下方区域：详情面板或事件日志
         lower_start = table_start + table_title_h + table_rows
-        lower_height = max_y - lower_start - footer_h - 1
+        lower_height = max(0, max_y - lower_start - footer_lines)
 
         if self.detail_mode:
             self._draw_detail(lower_start, max_x, lower_height)
         else:
             self._draw_log(lower_start, max_x, lower_height)
 
-        # 底部状态栏
-        self._draw_footer(max_y - 1, max_x)
+        # 底部状态栏（最后 2 行）
+        self._draw_footer(max_y - footer_lines, max_x)
 
     # --------------------------------------------------------
     # 标题栏
