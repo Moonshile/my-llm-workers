@@ -1,0 +1,7 @@
+name: git-stats
+description: 统计指定目录下所有 git 仓库中指定作者的提交记录，按天/周汇总
+language: python
+log_retention_days: 7
+schedule:
+  enabled: false
+run: "uv run python _oneshot/git-stats/main.py"
