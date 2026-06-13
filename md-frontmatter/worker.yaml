@@ -16,3 +16,5 @@ min_content_length: 200
 draft_markers:
   - "<!-- draft -->"
   - "<!-- wip -->"
+  - "!draft"
+  - "!wip"
