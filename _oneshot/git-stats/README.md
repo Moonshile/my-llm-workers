@@ -37,7 +37,7 @@ uv run python _oneshot/git-stats/main.py --reset-cache
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--root` | `~/code` | 要扫描的根目录 |
-| `--since` | `2024-10-01` | 起始日期 |
+| `--since` | `2024-11-01` | 起始日期 |
 | `--until` | 当天 | 结束日期（exclusive） |
 | `--author` | `kaiqiangduan` | 作者匹配字符串 |
 | `--no-fetch` | 否 | 跳过 git fetch |

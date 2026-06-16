@@ -1051,8 +1051,8 @@ def main():
         help="要扫描的根目录 (默认: ~/code)",
     )
     parser.add_argument(
-        "--since", default="2024-10-01",
-        help="起始日期 (默认: 2024-10-01)",
+        "--since", default="2024-11-01",
+        help="起始日期 (默认: 2024-11-01)",
     )
     parser.add_argument(
         "--until", default=datetime.now().strftime(DATE_FORMAT),
