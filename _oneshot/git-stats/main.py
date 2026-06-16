@@ -152,7 +152,8 @@ def get_commits(
     获取仓库中指定作者的提交。
 
     返回:
-        [{"sha": ..., "date": "YYYY-MM-DD", "time": "HH:MM:SS", "datetime": ..., "subject": ...}, ...]
+        [{"sha": ..., "date": ..., "time": ..., "datetime": ...,
+          "subject": ..., "author_name": ..., "author_email": ...}, ...]
     """
     cmd = [
         "git", "-C", str(repo_path),
@@ -160,7 +161,7 @@ def get_commits(
         f"--author={author}",
         f"--since={since}",
         f"--until={until}",
-        "--format=%H|%ai|%s",
+        "--format=%H|%ai|%an|%ae|%s",
         "--date-order",
     ]
 
@@ -182,10 +183,10 @@ def get_commits(
     for line in result.stdout.strip().split("\n"):
         if not line:
             continue
-        parts = line.split("|", 2)
-        if len(parts) < 3:
+        parts = line.split("|", 4)
+        if len(parts) < 5:
             continue
-        sha, date_str, subject = parts[0], parts[1].strip(), parts[2].strip()
+        sha, date_str, an, ae, subject = parts[0], parts[1].strip(), parts[2].strip(), parts[3].strip(), parts[4].strip()
 
         try:
             dt = datetime.strptime(date_str[:19], "%Y-%m-%d %H:%M:%S")
@@ -198,6 +199,8 @@ def get_commits(
             "time": dt.strftime("%H:%M:%S"),
             "datetime": dt,
             "subject": subject,
+            "author_name": an,
+            "author_email": ae,
         })
 
     # 增量模式：截断到上次缓存的 SHA 之后
@@ -327,7 +330,7 @@ def compute_daily_stats(commits: list[dict]) -> dict[str, int]:
 def print_report(
     daily_stats: dict[str, int],
     total_commits: int,
-    author: str,
+    author_groups: list[list[str]],
     since: str,
     until: str,
 ) -> None:
@@ -335,7 +338,8 @@ def print_report(
     report_lines = []
     report_lines.append("=" * 50)
     report_lines.append(f"  Git Commit 统计报告")
-    report_lines.append(f"  作者: {author}")
+    labels = ", ".join(g[0] for g in author_groups)
+    report_lines.append(f"  作者: {labels}")
     report_lines.append(f"  范围: {since} ~ {until} (exclusive)")
     report_lines.append(f"  总提交: {total_commits}")
     report_lines.append("=" * 50)
@@ -527,7 +531,7 @@ h2{font-size:18px;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid 
 .heatmap-months span{font-size:10px;color:#8b949e;overflow:visible;white-space:nowrap}
 .heatmap-body{display:flex;gap:3px}
 .heatmap-week{display:flex;flex-direction:column;gap:3px}
-.heatmap-day-labels{display:flex;flex-direction:column;gap:3px;margin-right:6px}
+.heatmap-day-labels{{display:flex;flex-direction:column;gap:3px;margin-right:6px;padding-top:22px}}
 .heatmap-day-labels span{font-size:10px;color:#8b949e;height:13px;line-height:13px}
 .heatmap-cell{width:13px;height:13px;border-radius:2px;cursor:pointer;position:relative}
 .heatmap-cell:hover{outline:1px solid #8b949e;z-index:1}
@@ -590,14 +594,16 @@ def generate_html_report(
     commits: list[dict],
     daily_stats: dict[str, int],
     repo_stats: dict[str, int],
-    author: str,
+    author_groups: list[list[str]],
+    author_summaries: list[dict],
     since: str,
     until: str,
     output_path: str,
     non_working: list[dict] | None = None,
     working: list[dict] | None = None,
 ) -> str:
-    """生成 GitHub 风格的 HTML 统计报告（含工作时间分析 Tab），返回输出路径。"""
+    """生成 GitHub 风格的 HTML 统计报告（含多作者、工作时间分析 Tab），返回输出路径。"""
+    author_label = ", ".join(s["label"] for s in author_summaries)
 
     # 准备数据（分母用首次到最后一次提交的天数）
     total_commits = len(commits)
@@ -807,7 +813,7 @@ def generate_html_report(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Git Commit Stats — {author}</title>
+<title>Git Commit Stats — {author_label}</title>
 <style>{HTML_CSS}</style>
 </head>
 <body>
@@ -821,8 +827,13 @@ def generate_html_report(
 <!-- ====== TAB: 全部提交 ====== -->
 <div class="tab-panel active" id="tab-all">
 
-<h1><span class="author">{author}</span> 的提交统计</h1>
+<h1><span class="author">{author_label}</span> 的提交统计</h1>
 <p class="subtitle">{data_start} ~ {data_end} &nbsp;·&nbsp; {len(set(c.get('repo','') for c in commits))} 个仓库 &nbsp;·&nbsp; 共 {total_commits} 条提交 &nbsp;·&nbsp; {total_days} 天</p>
+
+{"".join(
+    f'<div class="cards"><div class="card"><div class="label">👤 {s["label"]}</div><div class="value">{s["total"]}</div><div class="sub">{s["total"] / total_commits * 100:.0f}% 的提交' + (f" &nbsp;·&nbsp; 模式: {', '.join(s['patterns'])}" if len(s['patterns']) > 1 else "") + '</div></div></div>'
+    for s in author_summaries
+) if len(author_summaries) > 1 else ""}
 
 <!-- Summary Cards -->
 <div class="cards">
@@ -905,7 +916,7 @@ def generate_html_report(
 <!-- ====== TAB: 非工作时间 ====== -->
 <div class="tab-panel" id="tab-nonworking">
 
-<h1>⏰ <span class="author">{author}</span> 的非工作时间提交</h1>
+<h1>⏰ <span class="author">{author_label}</span> 的非工作时间提交</h1>
 <p class="subtitle">工作日 9:00-20:00 以外（含周末、法定节假日，已考虑调休）&nbsp;·&nbsp; {data_start} ~ {data_end}</p>
 
 {nw_cards}
@@ -1074,8 +1085,9 @@ def main():
         help="结束日期，exclusive (默认: 当天)",
     )
     parser.add_argument(
-        "--author", nargs="+", default=["kaiqiangduan", "duankaiqiang"],
-        help="作者匹配模式，支持多个 (默认: kaiqiangduan duankaiqiang)",
+        "--author", action="append", nargs="+",
+        default=[["kaiqiangduan", "duankaiqiang"]],
+        help="作者组 (可重复): 每组定义一个作者，组内为多个匹配模式",
     )
     parser.add_argument("--no-fetch", action="store_true", help="跳过 git fetch，仅使用本地数据")
     parser.add_argument("--reset-cache", action="store_true", help="清除缓存，强制全量重新扫描")
@@ -1090,8 +1102,7 @@ def main():
 
     args = parser.parse_args()
     root_dir = os.path.expanduser(args.root)
-    # 多个作者模式用 \| 拼接为 git regex
-    author = "\\|".join(args.author)
+    author_groups = args.author  # list of lists: [["kaiqiangduan","duankaiqiang"], ["panjia"]]
     since = args.since
     until = args.until
 
@@ -1122,27 +1133,71 @@ def main():
 
     logger.info("正在扫描仓库...")
 
-    all_commits, new_cache = collect_all_commits(
-        all_repos, author, since, until, cache, do_fetch=not args.no_fetch
+    # 为每个作者组收集提交（合并为一个 git regex 一次查询）
+    all_patterns = [p for g in author_groups for p in g]
+    combined_author = "\\|".join(all_patterns)
+    raw_commits, new_cache = collect_all_commits(
+        all_repos, combined_author, since, until, cache, do_fetch=not args.no_fetch
     )
 
-    # 按时间排序（最新在前）
-    all_commits.sort(key=lambda c: c["datetime"], reverse=True)
-
-    # 按 author date 二次过滤（git --since/--until 用 committer date，
-    # rebase/cherry-pick 会导致 author date 早于 committer date）
+    # 按 author date 二次过滤（git --since/--until 用 committer date）
     since_dt = datetime.strptime(since, DATE_FORMAT)
     until_dt = datetime.strptime(until, DATE_FORMAT)
-    filtered = [c for c in all_commits if since_dt <= c["datetime"] < until_dt]
-    skipped = len(all_commits) - len(filtered)
+    before = len(raw_commits)
+    raw_commits = [c for c in raw_commits if since_dt <= c["datetime"] < until_dt]
+    skipped = before - len(raw_commits)
     if skipped:
         logger.info(f"按 author date 过滤掉 {skipped} 条范围外提交")
-    all_commits = filtered
+
+    # 将提交归类到作者组（按 author_name / author_email 匹配）
+    per_author_commits: list[list[dict]] = [[] for _ in author_groups]
+    unmatched = []
+    for c in raw_commits:
+        an = c.get("author_name", "")
+        ae = c.get("author_email", "")
+        matched = False
+        for gi, patterns in enumerate(author_groups):
+            for p in patterns:
+                if p.lower() in an.lower() or p.lower() in ae.lower():
+                    c["author_group"] = gi
+                    c["author_label"] = author_groups[gi][0]
+                    per_author_commits[gi].append(c)
+                    matched = True
+                    break
+            if matched:
+                break
+        if not matched:
+            unmatched.append(c)
+
+    if unmatched:
+        logger.warning(f"有 {len(unmatched)} 条提交未能匹配到任何作者组")
+
+    # 合并去重（同一 SHA 只保留一次，优先第一个匹配的组）
+    seen = set()
+    all_commits = []
+    for gi, commits in enumerate(per_author_commits):
+        for c in commits:
+            if c["sha"] not in seen:
+                seen.add(c["sha"])
+                all_commits.append(c)
+
+    all_commits.sort(key=lambda c: c["datetime"], reverse=True)
 
     # 保存缓存
     save_cache(new_cache)
     logger.info(f"缓存已更新: {CACHE_FILE}")
-    logger.info(f"共 {len(all_commits)} 条提交")
+
+    # 按作者组统计
+    author_summaries = []
+    for gi, (patterns, commits) in enumerate(zip(author_groups, per_author_commits)):
+        label = patterns[0]
+        author_summaries.append({
+            "label": label,
+            "patterns": patterns,
+            "total": len(commits),
+        })
+        logger.info(f"  {label}: {len(commits)} 条提交 (模式: {', '.join(patterns)})")
+    logger.info(f"合并去重后共 {len(all_commits)} 条提交")
 
     # 统计
     daily_stats = compute_daily_stats(all_commits)
@@ -1150,21 +1205,24 @@ def main():
 
     if args.json:
         print(json.dumps({
-            "author": author,
             "since": since,
             "until": until,
             "total_commits": len(all_commits),
             "daily_stats": daily_stats,
             "repo_stats": repo_stats,
             "streaks": compute_streaks(daily_stats),
+            "author_groups": [{"label": s["label"], "total": s["total"]} for s in author_summaries],
             "commits": [
                 {"sha": c["sha"], "date": c["date"], "time": c["time"],
-                 "subject": c["subject"], "repo": c.get("repo", "")}
+                 "subject": c["subject"], "repo": c.get("repo", ""),
+                 "author_name": c.get("author_name", ""),
+                 "author_email": c.get("author_email", ""),
+                 "author_label": c.get("author_label", "")}
                 for c in all_commits
             ],
         }, indent=2, ensure_ascii=False))
     else:
-        print_report(daily_stats, len(all_commits), author, since, until)
+        print_report(daily_stats, len(all_commits), author_groups, since, until)
 
         if all_commits:
             logger.info("最近 10 条提交:")
@@ -1184,7 +1242,7 @@ def main():
     output_path = os.path.expanduser(args.output)
     generate_html_report(
         all_commits, daily_stats, repo_stats,
-        author, since, until, output_path,
+        author_groups, author_summaries, since, until, output_path,
         non_working=non_working, working=working,
     )
     logger.info(f"HTML 报告已生成: {output_path}")
