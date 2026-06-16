@@ -556,6 +556,7 @@ tr:hover td{background:#161b22}
 a,a:visited{color:#58a6ff;text-decoration:none}
 a:hover{text-decoration:underline}
 .scroll-table{max-height:500px;overflow-y:auto;border:1px solid #21262d;border-radius:6px}
+.repo-bar .bar-label{{width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}}
 .repo-badge{display:inline-block;background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;
             border-radius:12px;padding:2px 8px;font-size:11px;margin-right:4px}
 /* Tabs */
@@ -657,14 +658,17 @@ def generate_html_report(
             f'</div>\n'
         )
 
-    # 仓库排行表
-    repo_rows = ""
-    for i, (repo, cnt) in enumerate(repo_stats.items()):
-        pct = f"{cnt / total_commits * 100:.1f}%" if total_commits > 0 else "0%"
-        repo_rows += (
-            f'<tr><td>{i + 1}</td><td>{repo}</td>'
-            f'<td style="text-align:right">{cnt}</td>'
-            f'<td style="text-align:right;color:#8b949e">{pct}</td></tr>\n'
+    # 仓库排行柱状图
+    repo_max = max(repo_stats.values()) if repo_stats else 1
+    repo_bars = ""
+    for repo, cnt in repo_stats.items():
+        pct = int(cnt / repo_max * 100) if repo_max > 0 else 0
+        repo_bars += (
+            f'<div class="bar-row repo-bar">'
+            f'<span class="bar-label" title="{repo}">{repo}</span>'
+            f'<span class="bar-count">{cnt}</span>'
+            f'<div class="bar-track"><div class="bar-fill" style="width:{pct}%"></div></div>'
+            f'</div>\n'
         )
 
     # 最近提交表
@@ -687,8 +691,7 @@ def generate_html_report(
     nw_cards = ""
     nw_heatmap = ""
     nw_hourly_html = ""
-    nw_repo_rows = ""
-    nw_daily_rows = ""
+    nw_repo_bars = ""
     nw_tab_btn = ""
 
     if non_working is not None and working is not None:
@@ -776,23 +779,18 @@ def generate_html_report(
                 f'</div>\n'
             )
 
-        # 仓库排行
-        nw_repo_rows = ""
-        for i, (repo, cnt) in enumerate(nw_repo.items()):
-            pct_str = f"{cnt / nw_total * 100:.1f}%" if nw_total > 0 else "0%"
-            nw_repo_rows += (
-                f'<tr><td>{i + 1}</td><td>{repo}</td>'
-                f'<td style="text-align:right">{cnt}</td>'
-                f'<td style="text-align:right;color:#8b949e">{pct_str}</td></tr>\n'
+        # 仓库排行柱状图
+        nw_repo_max = max(nw_repo.values()) if nw_repo else 1
+        nw_repo_bars = ""
+        for repo, cnt in nw_repo.items():
+            pct = int(cnt / nw_repo_max * 100) if nw_repo_max > 0 else 0
+            nw_repo_bars += (
+                f'<div class="bar-row repo-bar">'
+                f'<span class="bar-label" title="{repo}">{repo}</span>'
+                f'<span class="bar-count">{cnt}</span>'
+                f'<div class="bar-track"><div class="bar-fill" style="width:{pct}%"></div></div>'
+                f'</div>\n'
             )
-
-        # 每日明细
-        nw_max = max(nw_daily.values()) if nw_daily else 1
-        nw_daily_rows = "".join(
-            f'<tr><td>{d}</td><td style="text-align:right;font-weight:600">{c}</td>'
-            f'<td><div class="bar-track" style="height:12px"><div class="bar-fill" style="width:{c / nw_max * 100:.0f}%;height:12px"></div></div></td></tr>'
-            for d, c in nw_daily.items()
-        )
 
         nw_tab_btn = f'<button class="tab-btn" onclick="switchTab(\'tab-nonworking\', this)">⏰ 非工作时间<span class="tag">{nw_pct:.0f}%</span></button>'
 
@@ -873,37 +871,17 @@ def generate_html_report(
   </div>
 </div>
 
-<!-- Weekly Bar Chart -->
-<h2>📅 周提交分布</h2>
-{week_bars}
+<!-- Repo Breakdown -->
+<h2>📦 仓库排行</h2>
+{repo_bars}
 
 <!-- Monthly Bar Chart -->
 <h2>📆 月提交分布</h2>
 {month_bars}
 
-<!-- Repo Breakdown -->
-<h2>📦 仓库排行</h2>
-<div class="scroll-table">
-<table>
-<thead><tr><th>#</th><th>仓库</th><th style="text-align:right">提交数</th><th style="text-align:right">占比</th></tr></thead>
-<tbody>{repo_rows}</tbody>
-</table>
-</div>
-
-<!-- Daily Detail -->
-<h2>📋 每日提交明细</h2>
-<div class="scroll-table">
-<table>
-<thead><tr><th>日期</th><th style="text-align:right">次数</th><th>分布</th></tr></thead>
-<tbody>
-{"".join(
-    f'<tr><td>{d}</td><td style="text-align:right;font-weight:600">{c}</td>'
-    f'<td><div class="bar-track" style="height:12px"><div class="bar-fill" style="width:{c / max(daily_stats.values()) * 100:.0f}%;height:12px"></div></div></td></tr>'
-    for d, c in daily_stats.items()
-)}
-</tbody>
-</table>
-</div>
+<!-- Weekly Bar Chart -->
+<h2>📅 周提交分布</h2>
+{week_bars}
 
 <!-- Recent Commits -->
 <h2>📝 最近提交</h2>
@@ -929,20 +907,7 @@ def generate_html_report(
 {nw_hourly_html}
 
 <h2>📦 非工作时间仓库排行</h2>
-<div class="scroll-table">
-<table>
-<thead><tr><th>#</th><th>仓库</th><th style="text-align:right">提交数</th><th style="text-align:right">占比</th></tr></thead>
-<tbody>{nw_repo_rows}</tbody>
-</table>
-</div>
-
-<h2>📋 非工作时间每日明细</h2>
-<div class="scroll-table">
-<table>
-<thead><tr><th>日期</th><th style="text-align:right">次数</th><th>分布</th></tr></thead>
-<tbody>{nw_daily_rows}</tbody>
-</table>
-</div>
+{nw_repo_bars}
 
 </div><!-- /tab-nonworking -->
 
@@ -1029,6 +994,11 @@ var nwData = {nw_data_json};
 if (nwData) {{
   renderHeatmap('heatmap-months-nw', 'heatmap-body-nw', nwData);
 }}
+
+// Auto-scroll heatmaps to latest (rightmost)
+document.querySelectorAll('.heatmap-wrapper').forEach(function(w) {{
+  w.scrollLeft = w.scrollWidth;
+}});
 
 function showTooltip(e, date, count) {{
   var t = document.getElementById('tooltip');
