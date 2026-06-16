@@ -399,6 +399,92 @@ def print_report(
     logger.info("\n".join(report_lines))
 
 
+# ---------- 工作时间分析 ----------
+
+# 中国法定节假日数据（国务院发布）
+# 格式: holidays = {date_str} 是节假日不上班
+#       makeup_days = {date_str} 是调休补班日（周末上班）
+_HOLIDAYS_2024_2026: dict[str, set[str]] = {
+    # === 2024 ===
+    "2024-10-01": "国庆节", "2024-10-02": "国庆节", "2024-10-03": "国庆节",
+    "2024-10-04": "国庆节", "2024-10-05": "国庆节", "2024-10-06": "国庆节",
+    "2024-10-07": "国庆节",
+    # === 2025 ===
+    "2025-01-01": "元旦",
+    "2025-01-28": "春节", "2025-01-29": "春节", "2025-01-30": "春节",
+    "2025-01-31": "春节", "2025-02-01": "春节", "2025-02-02": "春节",
+    "2025-02-03": "春节", "2025-02-04": "春节",
+    "2025-04-04": "清明节", "2025-04-05": "清明节", "2025-04-06": "清明节",
+    "2025-05-01": "劳动节", "2025-05-02": "劳动节", "2025-05-03": "劳动节",
+    "2025-05-04": "劳动节", "2025-05-05": "劳动节",
+    "2025-05-31": "端午节", "2025-06-01": "端午节", "2025-06-02": "端午节",
+    "2025-10-01": "中秋节/国庆节", "2025-10-02": "中秋节/国庆节",
+    "2025-10-03": "中秋节/国庆节", "2025-10-04": "中秋节/国庆节",
+    "2025-10-05": "中秋节/国庆节", "2025-10-06": "中秋节/国庆节",
+    "2025-10-07": "中秋节/国庆节", "2025-10-08": "中秋节/国庆节",
+    # === 2026（基于往年规律预估，待国务院正式公布后更新）===
+    "2026-01-01": "元旦", "2026-01-02": "元旦", "2026-01-03": "元旦",
+    "2026-02-16": "春节", "2026-02-17": "春节", "2026-02-18": "春节",
+    "2026-02-19": "春节", "2026-02-20": "春节", "2026-02-21": "春节",
+    "2026-02-22": "春节", "2026-02-23": "春节",
+    "2026-04-04": "清明节", "2026-04-05": "清明节", "2026-04-06": "清明节",
+    "2026-05-01": "劳动节", "2026-05-02": "劳动节", "2026-05-03": "劳动节",
+    "2026-05-04": "劳动节", "2026-05-05": "劳动节",
+}
+
+_MAKEUP_DAYS_2024_2026: dict[str, str] = {
+    # === 2024 ===
+    "2024-09-29": "补国庆班", "2024-10-12": "补国庆班",
+    # === 2025 ===
+    "2025-01-26": "补春节班", "2025-02-08": "补春节班",
+    "2025-04-27": "补劳动节班",
+    "2025-09-28": "补中秋国庆班", "2025-10-11": "补中秋国庆班",
+    # === 2026（待国务院正式公布后更新）===
+    "2026-01-04": "补元旦班",
+    "2026-02-14": "补春节班", "2026-02-28": "补春节班",
+    "2026-04-26": "补劳动节班",
+}
+
+
+def is_workday(d: date) -> bool:
+    """判断是否为工作日（考虑中国法定节假日和调休）。"""
+    ds = d.strftime(DATE_FORMAT)
+    if ds in _MAKEUP_DAYS_2024_2026:
+        return True  # 调休补班
+    if ds in _HOLIDAYS_2024_2026:
+        return False  # 法定节假日
+    # 默认: 周一至周五为工作日
+    return d.weekday() < 5
+
+
+def is_working_hour(dt: datetime) -> bool:
+    """判断是否在工作时间（工作日 9:00-20:00）。"""
+    if not is_workday(dt.date()):
+        return False
+    t = dt.time()
+    return t.hour >= 9 and t.hour < 20
+
+
+def classify_commits(commits: list[dict]) -> tuple[list[dict], list[dict]]:
+    """将提交分为工作时间和非工作时间两组。"""
+    working = []
+    non_working = []
+    for c in commits:
+        if is_working_hour(c["datetime"]):
+            working.append(c)
+        else:
+            non_working.append(c)
+    return working, non_working
+
+
+def compute_hourly_stats(commits: list[dict]) -> dict[int, int]:
+    """按小时（0-23）聚合提交次数。"""
+    stats: dict[int, int] = defaultdict(int)
+    for c in commits:
+        stats[c["datetime"].hour] += 1
+    return dict(sorted(stats.items()))
+
+
 # ---------- 仓库 & 连续天数统计 ----------
 
 def compute_repo_stats(commits: list[dict]) -> dict[str, int]:
@@ -514,6 +600,16 @@ a:hover{text-decoration:underline}
 .scroll-table{max-height:500px;overflow-y:auto;border:1px solid #21262d;border-radius:6px}
 .repo-badge{display:inline-block;background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;
             border-radius:12px;padding:2px 8px;font-size:11px;margin-right:4px}
+/* Tabs */
+.tabs{display:flex;gap:0;border-bottom:1px solid #21262d;margin-bottom:24px}
+.tab-btn{padding:10px 20px;cursor:pointer;color:#8b949e;border-bottom:2px solid transparent;
+         font-size:14px;font-weight:500;transition:color .2s,border-color .2s}
+.tab-btn:hover{color:#e6edf3}
+.tab-btn.active{color:#f78166;border-bottom-color:#f78166}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+.tag{display:inline-block;background:#1f6feb22;color:#58a6ff;border-radius:10px;
+     padding:2px 8px;font-size:11px;margin-left:6px;vertical-align:middle}
 """
 
 
@@ -537,8 +633,10 @@ def generate_html_report(
     since: str,
     until: str,
     output_path: str,
+    non_working: list[dict] | None = None,
+    working: list[dict] | None = None,
 ) -> str:
-    """生成 GitHub 风格的 HTML 统计报告，返回输出路径。"""
+    """生成 GitHub 风格的 HTML 统计报告（含工作时间分析 Tab），返回输出路径。"""
 
     # 准备数据
     total_commits = len(commits)
@@ -626,6 +724,120 @@ def generate_html_report(
             f'</tr>\n'
         )
 
+    # ---------- 非工作时间分析 ----------
+    nw_data_json = "null"
+    nw_cards = ""
+    nw_heatmap = ""
+    nw_hourly_html = ""
+    nw_repo_rows = ""
+    nw_daily_rows = ""
+    nw_tab_btn = ""
+
+    if non_working is not None and working is not None:
+        nw_daily = compute_daily_stats(non_working)
+        nw_total = len(non_working)
+        w_total = len(working)
+        nw_pct = nw_total / total_commits * 100 if total_commits > 0 else 0
+        nw_active = len(nw_daily)
+        nw_max_day = max(nw_daily, key=nw_daily.get) if nw_daily else "-"
+        nw_max_count = nw_daily.get(nw_max_day, 0) if nw_daily else 0
+        nw_hourly = compute_hourly_stats(non_working)
+        nw_hourly_max = max(nw_hourly.values()) if nw_hourly else 1
+        nw_peak_hour = max(nw_hourly, key=nw_hourly.get) if nw_hourly else 0
+        nw_repo = compute_repo_stats(non_working)
+
+        # 非工作时间热力图数据
+        nw_data_json = json.dumps({
+            "daily_stats": nw_daily,
+            "since": since,
+            "until": until,
+        }, ensure_ascii=False)
+
+        # 统计卡片
+        nw_cards = f"""
+<div class="cards">
+  <div class="card">
+    <div class="label">非工作时间提交</div>
+    <div class="value orange">{nw_total}</div>
+    <div class="sub">占总提交的 {nw_pct:.1f}%</div>
+  </div>
+  <div class="card">
+    <div class="label">工作时间提交</div>
+    <div class="value green">{w_total}</div>
+    <div class="sub">占总提交的 {100 - nw_pct:.1f}%</div>
+  </div>
+  <div class="card">
+    <div class="label">非工作活跃天数</div>
+    <div class="value blue">{nw_active}</div>
+    <div class="sub">日均 {nw_total / nw_active:.1f} 次" if nw_active > 0 else "" + "</div>
+  </div>
+  <div class="card">
+    <div class="label">非工作最高单日</div>
+    <div class="value purple">{nw_max_count}</div>
+    <div class="sub">{nw_max_day}</div>
+  </div>
+  <div class="card">
+    <div class="label">非工作高峰时段</div>
+    <div class="value">{nw_peak_hour}:00-{nw_peak_hour + 1}:00</div>
+    <div class="sub">{nw_hourly.get(nw_peak_hour, 0)} 次提交</div>
+  </div>
+</div>"""
+
+        # 非工作时间热力图
+        nw_heatmap = f"""
+<h2>📊 非工作时间提交热力图</h2>
+<div class="heatmap-wrapper">
+  <div style="display:flex">
+    <div class="heatmap-day-labels">
+      <span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span>
+    </div>
+    <div>
+      <div class="heatmap-months" id="heatmap-months-nw"></div>
+      <div class="heatmap-body" id="heatmap-body-nw"></div>
+    </div>
+  </div>
+  <div class="heatmap-legend">
+    Less <span class="heatmap-cell cell-0"></span>
+    <span class="heatmap-cell cell-1"></span>
+    <span class="heatmap-cell cell-2"></span>
+    <span class="heatmap-cell cell-3"></span>
+    <span class="heatmap-cell cell-4"></span> More
+  </div>
+</div>"""
+
+        # 按小时分布
+        nw_hourly_html = '<h2>🕐 非工作时间按小时分布</h2>\n'
+        for h, cnt in nw_hourly.items():
+            pct = int(cnt / nw_hourly_max * 100) if nw_hourly_max > 0 else 0
+            label = "🌙" if h < 6 else ("🌅" if h < 9 else ("🌙" if h >= 20 else "☀️"))
+            nw_hourly_html += (
+                f'<div class="bar-row">'
+                f'<span class="bar-label">{label} {h:02d}:00</span>'
+                f'<span class="bar-count">{cnt}</span>'
+                f'<div class="bar-track"><div class="bar-fill" style="width:{pct}%"></div></div>'
+                f'</div>\n'
+            )
+
+        # 仓库排行
+        nw_repo_rows = ""
+        for i, (repo, cnt) in enumerate(nw_repo.items()):
+            pct_str = f"{cnt / nw_total * 100:.1f}%" if nw_total > 0 else "0%"
+            nw_repo_rows += (
+                f'<tr><td>{i + 1}</td><td>{repo}</td>'
+                f'<td style="text-align:right">{cnt}</td>'
+                f'<td style="text-align:right;color:#8b949e">{pct_str}</td></tr>\n'
+            )
+
+        # 每日明细
+        nw_max = max(nw_daily.values()) if nw_daily else 1
+        nw_daily_rows = "".join(
+            f'<tr><td>{d}</td><td style="text-align:right;font-weight:600">{c}</td>'
+            f'<td><div class="bar-track" style="height:12px"><div class="bar-fill" style="width:{c / nw_max * 100:.0f}%;height:12px"></div></div></td></tr>'
+            for d, c in nw_daily.items()
+        )
+
+        nw_tab_btn = f'<button class="tab-btn" onclick="switchTab(\'tab-nonworking\', this)">⏰ 非工作时间<span class="tag">{nw_pct:.0f}%</span></button>'
+
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -635,6 +847,15 @@ def generate_html_report(
 <style>{HTML_CSS}</style>
 </head>
 <body>
+
+<!-- Tab Buttons -->
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('tab-all', this)">📊 全部提交</button>
+  {nw_tab_btn}
+</div>
+
+<!-- ====== TAB: 全部提交 ====== -->
+<div class="tab-panel active" id="tab-all">
 
 <h1><span class="author">{author}</span> 的提交统计</h1>
 <p class="subtitle">{since} ~ {until} &nbsp;·&nbsp; {len(set(c.get('repo','') for c in commits))} 个仓库 &nbsp;·&nbsp; 共 {total_commits} 条提交</p>
@@ -693,7 +914,6 @@ def generate_html_report(
     <span class="heatmap-cell cell-4"></span> More
   </div>
 </div>
-<div class="tooltip" id="tooltip"></div>
 
 <!-- Weekly Bar Chart -->
 <h2>📅 周提交分布</h2>
@@ -736,30 +956,68 @@ def generate_html_report(
 </table>
 </div>
 
+</div><!-- /tab-all -->
+
+<!-- ====== TAB: 非工作时间 ====== -->
+<div class="tab-panel" id="tab-nonworking">
+
+<h1>⏰ <span class="author">{author}</span> 的非工作时间提交</h1>
+<p class="subtitle">工作日 9:00-20:00 以外（含周末、法定节假日，已考虑调休）&nbsp;·&nbsp; {since} ~ {until}</p>
+
+{nw_cards}
+
+{nw_heatmap}
+
+{nw_hourly_html}
+
+<h2>📦 非工作时间仓库排行</h2>
+<div class="scroll-table">
+<table>
+<thead><tr><th>#</th><th>仓库</th><th style="text-align:right">提交数</th><th style="text-align:right">占比</th></tr></thead>
+<tbody>{nw_repo_rows}</tbody>
+</table>
+</div>
+
+<h2>📋 非工作时间每日明细</h2>
+<div class="scroll-table">
+<table>
+<thead><tr><th>日期</th><th style="text-align:right">次数</th><th>分布</th></tr></thead>
+<tbody>{nw_daily_rows}</tbody>
+</table>
+</div>
+
+</div><!-- /tab-nonworking -->
+
+<div class="tooltip" id="tooltip"></div>
+
 <script>
-// Heatmap rendering
-(function() {{
-  var data = {data_json};
+// Tab switching
+function switchTab(id, btn) {{
+  document.querySelectorAll('.tab-panel').forEach(function(p) {{ p.classList.remove('active'); }});
+  document.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+}}
+
+// Heatmap rendering helper
+function renderHeatmap(monthsDivId, bodyDivId, data) {{
   var daily = data.daily_stats;
   var since = new Date(data.since + 'T00:00:00');
   var until = new Date(data.until + 'T00:00:00');
 
-  // Find first Monday on or before since
   var start = new Date(since);
   start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
 
-  // Find last Sunday on or after until
   var end = new Date(until);
   end.setDate(end.getDate() + (7 - end.getDay()) % 7);
 
-  var monthsDiv = document.getElementById('heatmap-months');
-  var bodyDiv = document.getElementById('heatmap-body');
-  var tooltip = document.getElementById('tooltip');
+  var monthsDiv = document.getElementById(monthsDivId);
+  var bodyDiv = document.getElementById(bodyDivId);
 
   var weeks = [];
   var cursor = new Date(start);
   var lastMonth = -1;
-  var monthPositions = []; // {{label, weekIndex}}
+  var monthPositions = [];
 
   var weekIdx = 0;
   while (cursor <= end) {{
@@ -779,8 +1037,7 @@ def generate_html_report(
     weekIdx++;
   }}
 
-  // Month labels — absolute positioning for pixel-perfect alignment
-  var COL_WIDTH = 16; // 13px cell + 3px gap
+  var COL_WIDTH = 16;
   monthsDiv.style.position = 'relative';
   monthsDiv.style.height = '18px';
   monthsDiv.style.width = (weeks.length * COL_WIDTH) + 'px';
@@ -791,7 +1048,6 @@ def generate_html_report(
   }}
   monthsDiv.innerHTML = monthHTML;
 
-  // Cells
   var bodyHTML = '';
   for (var w = 0; w < weeks.length; w++) {{
     bodyHTML += '<div class="heatmap-week">';
@@ -805,7 +1061,16 @@ def generate_html_report(
     bodyHTML += '</div>';
   }}
   bodyDiv.innerHTML = bodyHTML;
-}})()
+}}
+
+// Render heatmap for tab-all
+renderHeatmap('heatmap-months', 'heatmap-body', {data_json});
+
+// Render heatmap for tab-nonworking (if data exists)
+var nwData = {nw_data_json};
+if (nwData) {{
+  renderHeatmap('heatmap-months-nw', 'heatmap-body-nw', nwData);
+}}
 
 function showTooltip(e, date, count) {{
   var t = document.getElementById('tooltip');
@@ -945,11 +1210,21 @@ def main():
             for c in all_commits[:10]:
                 logger.info(f"  {c['date']} {c['time']}  {c['subject'][:70]}")
 
+    # 工作时间分类
+    working, non_working = classify_commits(all_commits)
+    logger.info(
+        f"工作时间: {len(working)} 条, "
+        f"非工作时间: {len(non_working)} 条 "
+        f"({len(non_working) / len(all_commits) * 100:.1f}%)"
+        if all_commits else "无提交"
+    )
+
     # 生成 HTML 报告
     output_path = os.path.expanduser(args.output)
     generate_html_report(
         all_commits, daily_stats, repo_stats,
         author, since, until, output_path,
+        non_working=non_working, working=working,
     )
     logger.info(f"HTML 报告已生成: {output_path}")
 
