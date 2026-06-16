@@ -477,7 +477,7 @@ h2{font-size:18px;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid 
 /* Heatmap */
 .heatmap-wrapper{overflow-x:auto;margin-bottom:32px}
 .heatmap{display:flex;gap:3px}
-.heatmap-months{display:flex;gap:3px;margin-bottom:4px;padding-left:28px}
+.heatmap-months{margin-bottom:4px}
 .heatmap-months span{font-size:10px;color:#8b949e;overflow:visible;white-space:nowrap}
 .heatmap-body{display:flex;gap:3px}
 .heatmap-week{display:flex;flex-direction:column;gap:3px}
@@ -676,12 +676,14 @@ def generate_html_report(
 <!-- Heatmap -->
 <h2>📊 提交热力图</h2>
 <div class="heatmap-wrapper">
-  <div class="heatmap-months" id="heatmap-months"></div>
   <div style="display:flex">
     <div class="heatmap-day-labels">
       <span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span>
     </div>
-    <div class="heatmap-body" id="heatmap-body"></div>
+    <div>
+      <div class="heatmap-months" id="heatmap-months"></div>
+      <div class="heatmap-body" id="heatmap-body"></div>
+    </div>
   </div>
   <div class="heatmap-legend">
     Less <span class="heatmap-cell cell-0"></span>
@@ -777,15 +779,15 @@ def generate_html_report(
     weekIdx++;
   }}
 
-  // Month labels
-  var maxIdx = monthPositions.length > 0 ? monthPositions[monthPositions.length - 1].idx : 0;
+  // Month labels — absolute positioning for pixel-perfect alignment
+  var COL_WIDTH = 16; // 13px cell + 3px gap
+  monthsDiv.style.position = 'relative';
+  monthsDiv.style.height = '18px';
+  monthsDiv.style.width = (weeks.length * COL_WIDTH) + 'px';
   var monthHTML = '';
   for (var i = 0; i < monthPositions.length; i++) {{
     var mp = monthPositions[i];
-    var nextIdx = (i + 1 < monthPositions.length) ? monthPositions[i + 1].idx : weeks.length;
-    var span = nextIdx - mp.idx;
-    // Use a fixed width per week: 13px cell + 3px gap = 16px
-    monthHTML += '<span style="width:' + (span * 16 - 3) + 'px;display:inline-block">' + mp.label + '</span>';
+    monthHTML += '<span style="position:absolute;left:' + (mp.idx * COL_WIDTH) + 'px;font-size:10px;color:#8b949e">' + mp.label + '</span>';
   }}
   monthsDiv.innerHTML = monthHTML;
 
