@@ -1032,6 +1032,13 @@ def main():
     log_retention = load_log_retention()
     logger = setup_logging(backup_count=log_retention)
 
+    # 每年年底提示升级 chinesecalendar 以获取下一年节假日数据
+    if _cn_is_workday is not None and date.today().month >= 11:
+        logger.warning(
+            "⚠️  已到年底，国务院可能已公布下一年节假日安排。"
+            "请运行 uv sync --upgrade-package chinesecalendar 更新节假日数据。"
+        )
+
     parser = argparse.ArgumentParser(
         description="统计指定目录下所有 git 仓库中的提交频率"
     )
