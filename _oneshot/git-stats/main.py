@@ -19,9 +19,10 @@ import logging
 import os
 import subprocess
 import sys
+import webbrowser
 import yaml
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
@@ -280,6 +281,10 @@ def collect_all_commits(
             new_cnt += 1
         total_new += new_cnt
 
+        # 标记每条提交所属仓库
+        for c in commits:
+            c["repo"] = name
+
         if new_cnt:
             logger.info(
                 f"[{i+1:3d}/{total_repos}] {name:<40} "
@@ -394,6 +399,434 @@ def print_report(
     logger.info("\n".join(report_lines))
 
 
+# ---------- 仓库 & 连续天数统计 ----------
+
+def compute_repo_stats(commits: list[dict]) -> dict[str, int]:
+    """按仓库聚合提交次数，按数量降序排列。"""
+    stats: dict[str, int] = defaultdict(int)
+    for c in commits:
+        stats[c.get("repo", "unknown")] += 1
+    return dict(sorted(stats.items(), key=lambda x: x[1], reverse=True))
+
+
+def compute_streaks(daily_stats: dict[str, int]) -> dict:
+    """计算最长连续提交天数和当前连续天数。"""
+    if not daily_stats:
+        return {"longest": 0, "current": 0, "longest_range": ""}
+
+    dates = sorted(datetime.strptime(d, DATE_FORMAT).date() for d in daily_stats)
+    date_set = set(dates)
+
+    longest = 0
+    current = 0
+    longest_start = dates[0]
+    longest_end = dates[0]
+
+    cur_start = dates[0]
+    streak = 0
+    d = dates[0]
+    while d <= dates[-1]:
+        if d in date_set:
+            streak += 1
+            if streak > longest:
+                longest = streak
+                longest_start = cur_start
+                longest_end = d
+        else:
+            streak = 0
+            cur_start = d + timedelta(days=1)
+        d += timedelta(days=1)
+
+    # 当前连续（从今天往前数）
+    today = date.today()
+    current = 0
+    d = today
+    while d >= dates[0]:
+        if d in date_set:
+            current += 1
+        else:
+            break
+        d -= timedelta(days=1)
+
+    return {
+        "longest": longest,
+        "longest_range": f"{longest_start} ~ {longest_end}" if longest > 0 else "",
+        "current": current,
+    }
+
+
+# ---------- HTML 报告 ----------
+
+HTML_CSS = """
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+     background:#0d1117;color:#c9d1d9;padding:24px 32px;max-width:1200px;margin:0 auto}
+h1{font-size:28px;margin-bottom:4px}
+h1 span.author{color:#58a6ff}
+h2{font-size:18px;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid #21262d}
+.subtitle{color:#8b949e;font-size:14px;margin-bottom:24px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:32px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px}
+.card .label{font-size:12px;color:#8b949e;margin-bottom:4px}
+.card .value{font-size:24px;font-weight:600}
+.card .value.green{color:#3fb950}
+.card .value.blue{color:#58a6ff}
+.card .value.orange{color:#d2991d}
+.card .value.purple{color:#a371f7}
+.card .sub{font-size:12px;color:#8b949e;margin-top:2px}
+/* Heatmap */
+.heatmap-wrapper{overflow-x:auto;margin-bottom:32px}
+.heatmap{display:flex;gap:3px}
+.heatmap-months{display:flex;gap:3px;margin-bottom:4px;padding-left:28px}
+.heatmap-months span{font-size:10px;color:#8b949e;overflow:visible;white-space:nowrap}
+.heatmap-body{display:flex;gap:3px}
+.heatmap-week{display:flex;flex-direction:column;gap:3px}
+.heatmap-day-labels{display:flex;flex-direction:column;gap:3px;margin-right:6px}
+.heatmap-day-labels span{font-size:10px;color:#8b949e;height:13px;line-height:13px}
+.heatmap-cell{width:13px;height:13px;border-radius:2px;cursor:pointer;position:relative}
+.heatmap-cell:hover{outline:1px solid #8b949e;z-index:1}
+.cell-0{background:#161b22}
+.cell-1{background:#0e4429}
+.cell-2{background:#006d32}
+.cell-3{background:#26a641}
+.cell-4{background:#39d353}
+.heatmap-legend{display:flex;align-items:center;gap:4px;margin-top:8px;font-size:11px;color:#8b949e}
+.heatmap-legend .heatmap-cell{cursor:default}
+/* Tooltip */
+.tooltip{position:fixed;background:#1c2128;border:1px solid #30363d;border-radius:6px;
+         padding:8px 12px;font-size:12px;pointer-events:none;z-index:100;display:none;
+         white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.tooltip strong{color:#e6edf3}
+/* Bar chart */
+.bar-row{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.bar-row .bar-label{font-size:12px;color:#8b949e;width:80px;text-align:right;flex-shrink:0}
+.bar-row .bar-count{font-size:12px;color:#e6edf3;width:50px;text-align:right;flex-shrink:0}
+.bar-row .bar-track{flex:1;height:16px;background:#161b22;border-radius:3px;overflow:hidden}
+.bar-row .bar-fill{height:100%;background:linear-gradient(90deg,#0e4429,#39d353);border-radius:3px;
+                    transition:width .3s}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #21262d}
+th{color:#8b949e;font-weight:500;font-size:12px;position:sticky;top:0;background:#0d1117}
+tr:hover td{background:#161b22}
+.mono{font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:#8b949e}
+a,a:visited{color:#58a6ff;text-decoration:none}
+a:hover{text-decoration:underline}
+.scroll-table{max-height:500px;overflow-y:auto;border:1px solid #21262d;border-radius:6px}
+.repo-badge{display:inline-block;background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;
+            border-radius:12px;padding:2px 8px;font-size:11px;margin-right:4px}
+"""
+
+
+def _level(count: int) -> int:
+    if count <= 0:
+        return 0
+    if count <= 2:
+        return 1
+    if count <= 5:
+        return 2
+    if count <= 10:
+        return 3
+    return 4
+
+
+def generate_html_report(
+    commits: list[dict],
+    daily_stats: dict[str, int],
+    repo_stats: dict[str, int],
+    author: str,
+    since: str,
+    until: str,
+    output_path: str,
+) -> str:
+    """生成 GitHub 风格的 HTML 统计报告，返回输出路径。"""
+
+    # 准备数据
+    total_commits = len(commits)
+    dates_list = sorted(daily_stats.keys())
+    active_days = len(daily_stats)
+    total_days = (
+        datetime.strptime(until, DATE_FORMAT).date()
+        - datetime.strptime(since, DATE_FORMAT).date()
+    ).days
+    avg_per_active = total_commits / active_days if active_days > 0 else 0
+    avg_per_day = total_commits / total_days if total_days > 0 else 0
+    max_day = max(daily_stats, key=daily_stats.get) if daily_stats else "-"
+    max_day_count = daily_stats.get(max_day, 0) if daily_stats else 0
+    streaks = compute_streaks(daily_stats)
+
+    # 周汇总
+    week_stats = defaultdict(int)
+    for d, count in daily_stats.items():
+        dt = datetime.strptime(d, DATE_FORMAT)
+        iso = dt.isocalendar()
+        week_stats[f"{iso[0]}-W{iso[1]:02d}"] += count
+    week_stats = dict(sorted(week_stats.items()))
+    week_max = max(week_stats.values()) if week_stats else 1
+
+    # 月份汇总
+    month_stats = defaultdict(int)
+    for d, count in daily_stats.items():
+        month_stats[d[:7]] += count
+    month_stats = dict(sorted(month_stats.items()))
+
+    # 数据嵌入 JSON
+    data_json = json.dumps({
+        "daily_stats": daily_stats,
+        "since": since,
+        "until": until,
+    }, ensure_ascii=False)
+
+    # 周柱状图 HTML
+    week_bars = ""
+    for wk, cnt in week_stats.items():
+        pct = int(cnt / week_max * 100) if week_max > 0 else 0
+        week_bars += (
+            f'<div class="bar-row">'
+            f'<span class="bar-label">{wk}</span>'
+            f'<span class="bar-count">{cnt}</span>'
+            f'<div class="bar-track"><div class="bar-fill" style="width:{pct}%"></div></div>'
+            f'</div>\n'
+        )
+
+    # 月份柱状图
+    month_max = max(month_stats.values()) if month_stats else 1
+    month_bars = ""
+    for m, cnt in month_stats.items():
+        pct = int(cnt / month_max * 100) if month_max > 0 else 0
+        month_bars += (
+            f'<div class="bar-row">'
+            f'<span class="bar-label">{m}</span>'
+            f'<span class="bar-count">{cnt}</span>'
+            f'<div class="bar-track"><div class="bar-fill" style="width:{pct}%"></div></div>'
+            f'</div>\n'
+        )
+
+    # 仓库排行表
+    repo_rows = ""
+    for i, (repo, cnt) in enumerate(repo_stats.items()):
+        pct = f"{cnt / total_commits * 100:.1f}%" if total_commits > 0 else "0%"
+        repo_rows += (
+            f'<tr><td>{i + 1}</td><td>{repo}</td>'
+            f'<td style="text-align:right">{cnt}</td>'
+            f'<td style="text-align:right;color:#8b949e">{pct}</td></tr>\n'
+        )
+
+    # 最近提交表
+    commit_rows = ""
+    for c in commits[:100]:
+        sha_short = c["sha"][:7]
+        subject = c["subject"][:100]
+        repo = c.get("repo", "-")
+        commit_rows += (
+            f'<tr>'
+            f'<td><span class="mono">{sha_short}</span></td>'
+            f'<td>{c["date"]} {c["time"]}</td>'
+            f'<td><span class="repo-badge">{repo}</span></td>'
+            f'<td>{subject}</td>'
+            f'</tr>\n'
+        )
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Git Commit Stats — {author}</title>
+<style>{HTML_CSS}</style>
+</head>
+<body>
+
+<h1><span class="author">{author}</span> 的提交统计</h1>
+<p class="subtitle">{since} ~ {until} &nbsp;·&nbsp; {len(set(c.get('repo','') for c in commits))} 个仓库 &nbsp;·&nbsp; 共 {total_commits} 条提交</p>
+
+<!-- Summary Cards -->
+<div class="cards">
+  <div class="card">
+    <div class="label">总提交</div>
+    <div class="value green">{total_commits}</div>
+    <div class="sub">{total_days} 天内的提交</div>
+  </div>
+  <div class="card">
+    <div class="label">活跃天数</div>
+    <div class="value blue">{active_days}</div>
+    <div class="sub">占全部天数的 {active_days / total_days * 100:.0f}%</div>
+  </div>
+  <div class="card">
+    <div class="label">日均 (活跃日)</div>
+    <div class="value">{avg_per_active:.1f}</div>
+    <div class="sub">全部天数日均 {avg_per_day:.1f}</div>
+  </div>
+  <div class="card">
+    <div class="label">最高单日</div>
+    <div class="value orange">{max_day_count}</div>
+    <div class="sub">{max_day}</div>
+  </div>
+  <div class="card">
+    <div class="label">最长连续</div>
+    <div class="value purple">{streaks["longest"]}</div>
+    <div class="sub">{streaks["longest_range"]}</div>
+  </div>
+  <div class="card">
+    <div class="label">当前连续</div>
+    <div class="value">{streaks["current"]}</div>
+    <div class="sub">截至今天</div>
+  </div>
+</div>
+
+<!-- Heatmap -->
+<h2>📊 提交热力图</h2>
+<div class="heatmap-wrapper">
+  <div class="heatmap-months" id="heatmap-months"></div>
+  <div style="display:flex">
+    <div class="heatmap-day-labels">
+      <span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span>
+    </div>
+    <div class="heatmap-body" id="heatmap-body"></div>
+  </div>
+  <div class="heatmap-legend">
+    Less <span class="heatmap-cell cell-0"></span>
+    <span class="heatmap-cell cell-1"></span>
+    <span class="heatmap-cell cell-2"></span>
+    <span class="heatmap-cell cell-3"></span>
+    <span class="heatmap-cell cell-4"></span> More
+  </div>
+</div>
+<div class="tooltip" id="tooltip"></div>
+
+<!-- Weekly Bar Chart -->
+<h2>📅 周提交分布</h2>
+{week_bars}
+
+<!-- Monthly Bar Chart -->
+<h2>📆 月提交分布</h2>
+{month_bars}
+
+<!-- Repo Breakdown -->
+<h2>📦 仓库排行</h2>
+<div class="scroll-table">
+<table>
+<thead><tr><th>#</th><th>仓库</th><th style="text-align:right">提交数</th><th style="text-align:right">占比</th></tr></thead>
+<tbody>{repo_rows}</tbody>
+</table>
+</div>
+
+<!-- Daily Detail -->
+<h2>📋 每日提交明细</h2>
+<div class="scroll-table">
+<table>
+<thead><tr><th>日期</th><th style="text-align:right">次数</th><th>分布</th></tr></thead>
+<tbody>
+{"".join(
+    f'<tr><td>{d}</td><td style="text-align:right;font-weight:600">{c}</td>'
+    f'<td><div class="bar-track" style="height:12px"><div class="bar-fill" style="width:{c / max(daily_stats.values()) * 100:.0f}%;height:12px"></div></div></td></tr>'
+    for d, c in daily_stats.items()
+)}
+</tbody>
+</table>
+</div>
+
+<!-- Recent Commits -->
+<h2>📝 最近提交</h2>
+<div class="scroll-table">
+<table>
+<thead><tr><th>SHA</th><th>时间</th><th>仓库</th><th>提交信息</th></tr></thead>
+<tbody>{commit_rows}</tbody>
+</table>
+</div>
+
+<script>
+// Heatmap rendering
+(function() {{
+  var data = {data_json};
+  var daily = data.daily_stats;
+  var since = new Date(data.since + 'T00:00:00');
+  var until = new Date(data.until + 'T00:00:00');
+
+  // Find first Monday on or before since
+  var start = new Date(since);
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+
+  // Find last Sunday on or after until
+  var end = new Date(until);
+  end.setDate(end.getDate() + (7 - end.getDay()) % 7);
+
+  var monthsDiv = document.getElementById('heatmap-months');
+  var bodyDiv = document.getElementById('heatmap-body');
+  var tooltip = document.getElementById('tooltip');
+
+  var weeks = [];
+  var cursor = new Date(start);
+  var lastMonth = -1;
+  var monthPositions = []; // {{label, weekIndex}}
+
+  var weekIdx = 0;
+  while (cursor <= end) {{
+    var week = [];
+    for (var d = 0; d < 7; d++) {{
+      var ds = cursor.toISOString().slice(0, 10);
+      var count = daily[ds] || 0;
+      var month = cursor.getMonth();
+      if (month !== lastMonth && d <= 3) {{
+        monthPositions.push({{label: cursor.toLocaleString('zh-CN', {{month:'short'}}), idx: weekIdx}});
+        lastMonth = month;
+      }}
+      week.push({{date: ds, count: count}});
+      cursor.setDate(cursor.getDate() + 1);
+    }}
+    weeks.push(week);
+    weekIdx++;
+  }}
+
+  // Month labels
+  var maxIdx = monthPositions.length > 0 ? monthPositions[monthPositions.length - 1].idx : 0;
+  var monthHTML = '';
+  for (var i = 0; i < monthPositions.length; i++) {{
+    var mp = monthPositions[i];
+    var nextIdx = (i + 1 < monthPositions.length) ? monthPositions[i + 1].idx : weeks.length;
+    var span = nextIdx - mp.idx;
+    // Use a fixed width per week: 13px cell + 3px gap = 16px
+    monthHTML += '<span style="width:' + (span * 16 - 3) + 'px;display:inline-block">' + mp.label + '</span>';
+  }}
+  monthsDiv.innerHTML = monthHTML;
+
+  // Cells
+  var bodyHTML = '';
+  for (var w = 0; w < weeks.length; w++) {{
+    bodyHTML += '<div class="heatmap-week">';
+    for (var d = 0; d < 7; d++) {{
+      var cell = weeks[w][d];
+      var level = cell.count <= 0 ? 0 : cell.count <= 2 ? 1 : cell.count <= 5 ? 2 : cell.count <= 10 ? 3 : 4;
+      bodyHTML += '<div class="heatmap-cell cell-' + level + '" data-date="' + cell.date + '" data-count="' + cell.count + '"';
+      bodyHTML += ' onmouseenter="showTooltip(event,\\'' + cell.date + '\\',' + cell.count + ')"';
+      bodyHTML += ' onmouseleave="hideTooltip()"></div>';
+    }}
+    bodyHTML += '</div>';
+  }}
+  bodyDiv.innerHTML = bodyHTML;
+}})()
+
+function showTooltip(e, date, count) {{
+  var t = document.getElementById('tooltip');
+  t.innerHTML = '<strong>' + count + ' commits</strong> on ' + date;
+  t.style.display = 'block';
+  t.style.left = (e.clientX + 12) + 'px';
+  t.style.top = (e.clientY - 36) + 'px';
+}}
+function hideTooltip() {{
+  document.getElementById('tooltip').style.display = 'none';
+}}
+</script>
+
+</body>
+</html>"""
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    return output_path
+
+
 # ---------- 主入口 ----------
 
 def main():
@@ -422,6 +855,11 @@ def main():
     parser.add_argument("--repos", nargs="+", help="指定要扫描的仓库名（而非全部）")
     parser.add_argument("--json", action="store_true", help="以 JSON 格式输出结果")
     parser.add_argument("--list-repos", action="store_true", help="仅列出找到的仓库，不执行统计")
+    parser.add_argument(
+        "--output", default=str(TOOL_DIR / "report.html"),
+        help=f"HTML 报告输出路径 (默认: {TOOL_DIR / 'report.html'})",
+    )
+    parser.add_argument("--no-open", action="store_true", help="不自动打开 HTML 报告")
 
     args = parser.parse_args()
     root_dir = os.path.expanduser(args.root)
@@ -478,8 +916,9 @@ def main():
     logger.info(f"缓存已更新: {CACHE_FILE}")
     logger.info(f"共 {len(all_commits)} 条提交")
 
-    # 输出
+    # 统计
     daily_stats = compute_daily_stats(all_commits)
+    repo_stats = compute_repo_stats(all_commits)
 
     if args.json:
         print(json.dumps({
@@ -488,8 +927,11 @@ def main():
             "until": until,
             "total_commits": len(all_commits),
             "daily_stats": daily_stats,
+            "repo_stats": repo_stats,
+            "streaks": compute_streaks(daily_stats),
             "commits": [
-                {"sha": c["sha"], "date": c["date"], "time": c["time"], "subject": c["subject"]}
+                {"sha": c["sha"], "date": c["date"], "time": c["time"],
+                 "subject": c["subject"], "repo": c.get("repo", "")}
                 for c in all_commits
             ],
         }, indent=2, ensure_ascii=False))
@@ -500,6 +942,17 @@ def main():
             logger.info("最近 10 条提交:")
             for c in all_commits[:10]:
                 logger.info(f"  {c['date']} {c['time']}  {c['subject'][:70]}")
+
+    # 生成 HTML 报告
+    output_path = os.path.expanduser(args.output)
+    generate_html_report(
+        all_commits, daily_stats, repo_stats,
+        author, since, until, output_path,
+    )
+    logger.info(f"HTML 报告已生成: {output_path}")
+
+    if not args.no_open and not args.json:
+        webbrowser.open(f"file://{os.path.abspath(output_path)}")
 
 
 if __name__ == "__main__":

@@ -45,3 +45,6 @@ logs/
 # === File Sync ===
 .filesync.yaml
 backups/
+
+# === One-shot generated ===
+_oneshot/**/report.html
