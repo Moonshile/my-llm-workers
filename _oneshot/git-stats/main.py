@@ -531,7 +531,7 @@ h2{font-size:18px;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid 
 .heatmap-months span{font-size:10px;color:#8b949e;overflow:visible;white-space:nowrap}
 .heatmap-body{display:flex;gap:3px}
 .heatmap-week{display:flex;flex-direction:column;gap:3px}
-.heatmap-day-labels{{display:flex;flex-direction:column;gap:3px;margin-right:6px;padding-top:22px}}
+.heatmap-day-labels{display:flex;flex-direction:column;gap:3px;margin-right:6px;padding-top:22px}
 .heatmap-day-labels span{font-size:10px;color:#8b949e;height:13px;line-height:13px}
 .heatmap-cell{width:13px;height:13px;border-radius:2px;cursor:pointer;position:relative}
 .heatmap-cell:hover{outline:1px solid #8b949e;z-index:1}
@@ -562,7 +562,7 @@ tr:hover td{background:#161b22}
 a,a:visited{color:#58a6ff;text-decoration:none}
 a:hover{text-decoration:underline}
 .scroll-table{max-height:500px;overflow-y:auto;border:1px solid #21262d;border-radius:6px}
-.repo-bar .bar-label{{width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}}
+.repo-bar .bar-label{width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
 .repo-badge{display:inline-block;background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;
             border-radius:12px;padding:2px 8px;font-size:11px;margin-right:4px}
 /* Tabs */
