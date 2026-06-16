@@ -701,10 +701,13 @@ def generate_html_report(
         sha_short = c["sha"][:7]
         subject = c["subject"][:100]
         repo = c.get("repo", "-")
+        al = c.get("author_label", "")
+        author_cell = f'<td><span class="repo-badge">{al}</span></td>' if multi_author else ""
         commit_rows += (
             f'<tr>'
             f'<td><span class="mono">{sha_short}</span></td>'
             f'<td>{c["date"]} {c["time"]}</td>'
+            f'{author_cell}'
             f'<td><span class="repo-badge">{repo}</span></td>'
             f'<td>{subject}</td>'
             f'</tr>\n'
@@ -1041,7 +1044,7 @@ def generate_html_report(
 <h2>📝 最近提交</h2>
 <div class="scroll-table">
 <table>
-<thead><tr><th>SHA</th><th>时间</th><th>仓库</th><th>提交信息</th></tr></thead>
+<thead><tr><th>SHA</th><th>时间</th>{"<th>作者</th>" if multi_author else ""}<th>仓库</th><th>提交信息</th></tr></thead>
 <tbody>{commit_rows}</tbody>
 </table>
 </div>
@@ -1353,7 +1356,8 @@ def main():
             "total": len(commits),
         })
         logger.info(f"  {label}: {len(commits)} 条提交 (模式: {', '.join(patterns)})")
-        # 每作者详细统计
+        # 每作者详细统计（先按时间排序）
+        commits.sort(key=lambda c: c["datetime"], reverse=True)
         ad = compute_daily_stats(commits)
         per_author_data.append({
             "label": label,
