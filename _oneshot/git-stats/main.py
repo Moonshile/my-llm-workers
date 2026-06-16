@@ -925,6 +925,10 @@ function switchTab(id, btn) {{
   panel.querySelectorAll('.heatmap-wrapper').forEach(function(w) {{ w.scrollLeft = w.scrollWidth; }});
 }}
 
+function fmtDate(d) {{
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}}
+
 // Heatmap rendering helper
 function renderHeatmap(monthsDivId, bodyDivId, data) {{
   var daily = data.daily_stats;
@@ -949,7 +953,7 @@ function renderHeatmap(monthsDivId, bodyDivId, data) {{
   while (cursor <= end) {{
     var week = [];
     for (var d = 0; d < 7; d++) {{
-      var ds = cursor.toISOString().slice(0, 10);
+      var ds = fmtDate(cursor);
       var count = daily[ds] || 0;
       var month = cursor.getMonth();
       if (month !== lastMonth && d <= 3) {{
