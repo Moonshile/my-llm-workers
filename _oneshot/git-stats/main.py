@@ -575,6 +575,14 @@ a:hover{text-decoration:underline}
 .tab-panel.active{display:block}
 .tag{display:inline-block;background:#1f6feb22;color:#58a6ff;border-radius:10px;
      padding:2px 8px;font-size:11px;margin-left:6px;vertical-align:middle}
+/* Author-level tabs */
+.author-tabs{display:flex;gap:0;border-bottom:1px solid #30363d;margin-bottom:12px}
+.author-tab-btn{padding:8px 16px;cursor:pointer;color:#8b949e;border-bottom:2px solid transparent;
+               font-size:15px;font-weight:600;transition:color .2s,border-color .2s}
+.author-tab-btn:hover{color:#e6edf3}
+.author-tab-btn.active{color:#58a6ff;border-bottom-color:#58a6ff}
+.author-panel{display:none}
+.author-panel.active{display:block}
 """
 
 
@@ -601,9 +609,11 @@ def generate_html_report(
     output_path: str,
     non_working: list[dict] | None = None,
     working: list[dict] | None = None,
+    per_author_data: list[dict] | None = None,
 ) -> str:
-    """生成 GitHub 风格的 HTML 统计报告（含多作者、工作时间分析 Tab），返回输出路径。"""
+    """生成 GitHub 风格的 HTML 统计报告（含多作者 Tab），返回输出路径。"""
     author_label = ", ".join(s["label"] for s in author_summaries)
+    multi_author = len(author_summaries) > 1
 
     # 准备数据（分母用首次到最后一次提交的天数）
     total_commits = len(commits)
@@ -808,6 +818,125 @@ def generate_html_report(
 
         nw_tab_btn = f'<button class="tab-btn" onclick="switchTab(\'tab-nonworking\', this)">⏰ 非工作时间<span class="tag">{nw_pct:.0f}%</span></button>'
 
+    # ---------- 每作者 Tab 内容 ----------
+    author_tab_btns = ""
+    author_panels = ""
+    author_heatmap_js = ""
+
+    if multi_author and per_author_data:
+        for ai, ad in enumerate(per_author_data):
+            _label = ad["label"]
+            _total = ad["total_commits"]
+            _daily = ad["daily_stats"]
+            _repo_s = ad["repo_stats"]
+            _streaks = ad["streaks"]
+            _commits = ad["commits"]
+
+            if not _daily:
+                author_tab_btns += f'<button class="tab-btn" onclick="switchAuthorTab(&#39;author-{ai}&#39;, this)">{_label}<span class="tag">{_total}</span></button>\n'
+                author_panels += f'<div class="author-panel" id="author-{ai}"><p style="color:#8b949e">该时间段内无提交记录。</p></div>\n'
+                continue
+
+            # 日期范围
+            _dates = sorted(_daily.keys())
+            _ad_start = _dates[0]
+            _ad_end = _dates[-1]
+            _ad_sd = datetime.strptime(_ad_start, DATE_FORMAT).date()
+            _ad_ed = datetime.strptime(_ad_end, DATE_FORMAT).date()
+            _ad_td = (_ad_ed - _ad_sd).days + 1
+            _active = len(_daily)
+            _avg_a = _total / _active if _active > 0 else 0
+            _avg_d = _total / _ad_td if _ad_td > 0 else 0
+            _max_day = max(_daily, key=_daily.get)
+            _max_cnt = _daily[_max_day]
+
+            # 周/月
+            _week_s = defaultdict(int)
+            for d, c in _daily.items():
+                dt = datetime.strptime(d, DATE_FORMAT)
+                iso = dt.isocalendar()
+                _week_s[f"{iso[0]}-W{iso[1]:02d}"] += c
+            _week_s = dict(sorted(_week_s.items()))
+            _w_max = max(_week_s.values()) if _week_s else 1
+            _month_s = defaultdict(int)
+            for d, c in _daily.items():
+                _month_s[d[:7]] += c
+            _month_s = dict(sorted(_month_s.items()))
+            _m_max = max(_month_s.values()) if _month_s else 1
+
+            # 数据 JSON
+            _data_json = json.dumps({"daily_stats": _daily, "since": _ad_start, "until": _ad_end}, ensure_ascii=False)
+
+            # 柱状图
+            _repo_max = max(_repo_s.values()) if _repo_s else 1
+            _repo_bars = "".join(
+                f'<div class="bar-row repo-bar"><span class="bar-label" title="{r}">{r}</span><span class="bar-count">{c}</span><div class="bar-track"><div class="bar-fill" style="width:{int(c/_repo_max*100)}%"></div></div></div>\n'
+                for r, c in _repo_s.items()
+            )
+            _week_bars = "".join(
+                f'<div class="bar-row"><span class="bar-label">{wk}</span><span class="bar-count">{c}</span><div class="bar-track"><div class="bar-fill" style="width:{int(c/_w_max*100)}%"></div></div></div>\n'
+                for wk, c in _week_s.items()
+            )
+            _month_bars = "".join(
+                f'<div class="bar-row"><span class="bar-label">{m}</span><span class="bar-count">{c}</span><div class="bar-track"><div class="bar-fill" style="width:{int(c/_m_max*100)}%"></div></div></div>\n'
+                for m, c in _month_s.items()
+            )
+            _commit_rows = "".join(
+                f'<tr><td><span class="mono">{c["sha"][:7]}</span></td><td>{c["date"]} {c["time"]}</td><td><span class="repo-badge">{c.get("repo","-")}</span></td><td>{c["subject"][:100]}</td></tr>\n'
+                for c in _commits[:50]
+            )
+
+            hid = f"author-{ai}"
+            author_tab_btns += f'<button class="tab-btn" onclick="switchAuthorTab(&#39;{hid}&#39;, this)">{_label}<span class="tag">{_total}</span></button>\n'
+
+            author_panels += f"""
+<div class="author-panel" id="{hid}">
+<h1><span class="author">{_label}</span> 的提交统计</h1>
+<p class="subtitle">{_ad_start} ~ {_ad_end} &nbsp;·&nbsp; {len(_repo_s)} 个仓库 &nbsp;·&nbsp; 共 {_total} 条提交 &nbsp;·&nbsp; {_ad_td} 天</p>
+
+<div class="cards">
+  <div class="card"><div class="label">总提交</div><div class="value green">{_total}</div><div class="sub">{_ad_td} 天内的提交</div></div>
+  <div class="card"><div class="label">活跃天数</div><div class="value blue">{_active}</div><div class="sub">占 {_ad_td} 天的 {_active/_ad_td*100:.0f}%</div></div>
+  <div class="card"><div class="label">日均 (活跃日)</div><div class="value">{_avg_a:.1f}</div><div class="sub">全部日均 {_avg_d:.1f}</div></div>
+  <div class="card"><div class="label">最高单日</div><div class="value orange">{_max_cnt}</div><div class="sub">{_max_day}</div></div>
+  <div class="card"><div class="label">最长连续</div><div class="value purple">{_streaks["longest"]}</div><div class="sub">{_streaks["longest_range"]}</div></div>
+  <div class="card"><div class="label">当前连续</div><div class="value">{_streaks["current"]}</div><div class="sub">截至数据最新日</div></div>
+</div>
+
+<h2>📊 提交热力图</h2>
+<div class="heatmap-wrapper">
+  <div style="display:flex">
+    <div class="heatmap-day-labels"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span></div>
+    <div>
+      <div class="heatmap-months" id="heatmap-months-{hid}"></div>
+      <div class="heatmap-body" id="heatmap-body-{hid}"></div>
+    </div>
+  </div>
+  <div class="heatmap-legend">
+    Less <span class="heatmap-cell cell-0"></span><span class="heatmap-cell cell-1"></span><span class="heatmap-cell cell-2"></span><span class="heatmap-cell cell-3"></span><span class="heatmap-cell cell-4"></span> More
+  </div>
+</div>
+
+<h2>📦 仓库排行</h2>
+{_repo_bars}
+
+<h2>📆 月提交分布</h2>
+{_month_bars}
+
+<h2>📅 周提交分布</h2>
+{_week_bars}
+
+<h2>📝 最近提交</h2>
+<div class="scroll-table">
+<table>
+<thead><tr><th>SHA</th><th>时间</th><th>仓库</th><th>提交信息</th></tr></thead>
+<tbody>{_commit_rows}</tbody>
+</table>
+</div>
+</div>
+"""
+            author_heatmap_js += f"renderHeatmap('heatmap-months-{hid}', 'heatmap-body-{hid}', {_data_json});\n"
+
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -818,7 +947,13 @@ def generate_html_report(
 </head>
 <body>
 
-<!-- Tab Buttons -->
+<!-- Author Tabs -->
+{(
+    '<div class="author-tabs"><button class="author-tab-btn active" onclick="switchAuthorTab(&#39;author-all&#39;, this)">📊 全部</button>' + author_tab_btns + '</div>'
+    + '<div class="author-panel active" id="author-all">'
+) if multi_author else ""}
+
+<!-- Sub Tabs -->
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('tab-all', this)">📊 全部提交</button>
   {nw_tab_btn}
@@ -930,10 +1065,26 @@ def generate_html_report(
 
 </div><!-- /tab-nonworking -->
 
+{"</div><!-- /author-all -->" if multi_author else ""}
+
+{author_panels}
+
+
 <div class="tooltip" id="tooltip"></div>
 
 <script>
-// Tab switching
+// Author tab switching
+function switchAuthorTab(id, btn) {{
+  document.querySelectorAll('.author-panel').forEach(function(p) {{ p.classList.remove('active'); }});
+  document.querySelectorAll('.author-tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+  // scroll heatmaps in this author panel
+  var panel = document.getElementById(id);
+  panel.querySelectorAll('.heatmap-wrapper').forEach(function(w) {{ w.scrollLeft = w.scrollWidth; }});
+}}
+
+// Sub-tab switching
 function switchTab(id, btn) {{
   document.querySelectorAll('.tab-panel').forEach(function(p) {{ p.classList.remove('active'); }});
   document.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
@@ -1027,6 +1178,9 @@ var nwData = {nw_data_json};
 if (nwData) {{
   renderHeatmap('heatmap-months-nw', 'heatmap-body-nw', nwData);
 }}
+
+// Render per-author heatmaps
+{author_heatmap_js}
 
 // Auto-scroll heatmaps to latest (rightmost)
 document.querySelectorAll('.heatmap-wrapper').forEach(function(w) {{
@@ -1187,8 +1341,9 @@ def main():
     save_cache(new_cache)
     logger.info(f"缓存已更新: {CACHE_FILE}")
 
-    # 按作者组统计
+    # 按作者组统计（摘要 + 每作者详细数据）
     author_summaries = []
+    per_author_data = []  # 每个作者的 {label, daily_stats, repo_stats, ...}
     for gi, (patterns, commits) in enumerate(zip(author_groups, per_author_commits)):
         label = patterns[0]
         author_summaries.append({
@@ -1197,6 +1352,16 @@ def main():
             "total": len(commits),
         })
         logger.info(f"  {label}: {len(commits)} 条提交 (模式: {', '.join(patterns)})")
+        # 每作者详细统计
+        ad = compute_daily_stats(commits)
+        per_author_data.append({
+            "label": label,
+            "commits": commits,
+            "daily_stats": ad,
+            "repo_stats": compute_repo_stats(commits),
+            "total_commits": len(commits),
+            "streaks": compute_streaks(ad),
+        })
     logger.info(f"合并去重后共 {len(all_commits)} 条提交")
 
     # 统计
@@ -1244,6 +1409,7 @@ def main():
         all_commits, daily_stats, repo_stats,
         author_groups, author_summaries, since, until, output_path,
         non_working=non_working, working=working,
+        per_author_data=per_author_data,
     )
     logger.info(f"HTML 报告已生成: {output_path}")
 
