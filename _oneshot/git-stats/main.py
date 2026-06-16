@@ -1073,7 +1073,10 @@ def main():
         "--until", default=datetime.now().strftime(DATE_FORMAT),
         help="结束日期，exclusive (默认: 当天)",
     )
-    parser.add_argument("--author", default="kaiqiangduan", help="作者匹配字符串 (默认: kaiqiangduan)")
+    parser.add_argument(
+        "--author", nargs="+", default=["kaiqiangduan", "duankaiqiang"],
+        help="作者匹配模式，支持多个 (默认: kaiqiangduan duankaiqiang)",
+    )
     parser.add_argument("--no-fetch", action="store_true", help="跳过 git fetch，仅使用本地数据")
     parser.add_argument("--reset-cache", action="store_true", help="清除缓存，强制全量重新扫描")
     parser.add_argument("--repos", nargs="+", help="指定要扫描的仓库名（而非全部）")
@@ -1087,7 +1090,8 @@ def main():
 
     args = parser.parse_args()
     root_dir = os.path.expanduser(args.root)
-    author = args.author
+    # 多个作者模式用 \| 拼接为 git regex
+    author = "\\|".join(args.author)
     since = args.since
     until = args.until
 
