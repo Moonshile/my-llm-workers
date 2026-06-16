@@ -5,7 +5,7 @@ log_retention_days: 7
 timeout: 28800
 schedule:
   enabled: true
-  cron: "* 10 * * *"
+  cron: "* 12 * * *"
   job_options:
     misfire_grace_time: 43200
     coalesce: true
