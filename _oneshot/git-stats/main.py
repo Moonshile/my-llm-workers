@@ -846,7 +846,7 @@ def generate_html_report(
   <div class="card">
     <div class="label">当前连续</div>
     <div class="value">{streaks["current"]}</div>
-    <div class="sub">截至今天</div>
+    <div class="sub">截至数据最新日</div>
   </div>
 </div>
 
