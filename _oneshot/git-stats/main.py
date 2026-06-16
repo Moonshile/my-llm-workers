@@ -750,7 +750,7 @@ def generate_html_report(
 <div class="heatmap-wrapper">
   <div style="display:flex">
     <div class="heatmap-day-labels">
-      <span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span>
+      <span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span>
     </div>
     <div>
       <div class="heatmap-months" id="heatmap-months-nw"></div>
@@ -855,7 +855,7 @@ def generate_html_report(
 <div class="heatmap-wrapper">
   <div style="display:flex">
     <div class="heatmap-day-labels">
-      <span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span>
+      <span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span>
     </div>
     <div>
       <div class="heatmap-months" id="heatmap-months"></div>
