@@ -920,6 +920,9 @@ function switchTab(id, btn) {{
   document.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
   document.getElementById(id).classList.add('active');
   btn.classList.add('active');
+  // 切换后滚动热力图到最右侧
+  var panel = document.getElementById(id);
+  panel.querySelectorAll('.heatmap-wrapper').forEach(function(w) {{ w.scrollLeft = w.scrollWidth; }});
 }}
 
 // Heatmap rendering helper
