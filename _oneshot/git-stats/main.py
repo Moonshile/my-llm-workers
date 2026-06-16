@@ -1240,8 +1240,8 @@ def main():
     )
     parser.add_argument(
         "--author", action="append", nargs="+",
-        default=[["kaiqiangduan", "duankaiqiang"]],
-        help="作者组 (可重复): 每组定义一个作者，组内为多个匹配模式",
+        default=None,
+        help="作者组 (可重复): 每组定义一个作者，组内为多个匹配模式 (默认: kaiqiangduan duankaiqiang)",
     )
     parser.add_argument("--no-fetch", action="store_true", help="跳过 git fetch，仅使用本地数据")
     parser.add_argument("--reset-cache", action="store_true", help="清除缓存，强制全量重新扫描")
@@ -1256,7 +1256,8 @@ def main():
 
     args = parser.parse_args()
     root_dir = os.path.expanduser(args.root)
-    author_groups = args.author  # list of lists: [["kaiqiangduan","duankaiqiang"], ["panjia"]]
+    # 显式指定 --author 时替换默认值，否则用默认
+    author_groups = args.author if args.author is not None else [["kaiqiangduan", "duankaiqiang"]]
     since = args.since
     until = args.until
 
