@@ -1033,7 +1033,7 @@ def main():
     logger = setup_logging(backup_count=log_retention)
 
     # 每年年底提示升级 chinesecalendar 以获取下一年节假日数据
-    if _cn_is_workday is not None and date.today().month >= 11:
+    if _cn_is_workday is not None and date.today().month == 12:
         logger.warning(
             "⚠️  已到年底，国务院可能已公布下一年节假日安排。"
             "请运行 uv sync --upgrade-package chinesecalendar 更新节假日数据。"
