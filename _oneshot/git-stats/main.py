@@ -359,13 +359,15 @@ def print_report(
 
     report_lines.append("")
 
-    # 汇总统计
+    # 汇总统计（分母用首次到最后一次提交的天数，而非 --since/--until）
     dates = sorted(daily_stats.keys())
     active_days = len(daily_stats)
-    total_days = (
-        datetime.strptime(until, DATE_FORMAT).date()
-        - datetime.strptime(since, DATE_FORMAT).date()
-    ).days
+    if dates:
+        first_dt = datetime.strptime(dates[0], DATE_FORMAT).date()
+        last_dt = datetime.strptime(dates[-1], DATE_FORMAT).date()
+        total_days = (last_dt - first_dt).days + 1
+    else:
+        total_days = 0
     avg_per_active = total_commits / active_days if active_days > 0 else 0
     avg_per_day = total_commits / total_days if total_days > 0 else 0
     max_day = max(daily_stats, key=daily_stats.get)
@@ -597,14 +599,20 @@ def generate_html_report(
 ) -> str:
     """生成 GitHub 风格的 HTML 统计报告（含工作时间分析 Tab），返回输出路径。"""
 
-    # 准备数据
+    # 准备数据（分母用首次到最后一次提交的天数）
     total_commits = len(commits)
     dates_list = sorted(daily_stats.keys())
     active_days = len(daily_stats)
-    total_days = (
-        datetime.strptime(until, DATE_FORMAT).date()
-        - datetime.strptime(since, DATE_FORMAT).date()
-    ).days
+    if dates_list:
+        data_start = dates_list[0]
+        data_end = dates_list[-1]
+        first_dt = datetime.strptime(data_start, DATE_FORMAT).date()
+        last_dt = datetime.strptime(data_end, DATE_FORMAT).date()
+        total_days = (last_dt - first_dt).days + 1
+    else:
+        data_start = since
+        data_end = until
+        total_days = 0
     avg_per_active = total_commits / active_days if active_days > 0 else 0
     avg_per_day = total_commits / total_days if total_days > 0 else 0
     max_day = max(daily_stats, key=daily_stats.get) if daily_stats else "-"
@@ -626,11 +634,11 @@ def generate_html_report(
         month_stats[d[:7]] += count
     month_stats = dict(sorted(month_stats.items()))
 
-    # 数据嵌入 JSON
+    # 数据嵌入 JSON（热力图从首次提交开始，而非 --since）
     data_json = json.dumps({
         "daily_stats": daily_stats,
-        "since": since,
-        "until": until,
+        "since": data_start,
+        "until": data_end,
     }, ensure_ascii=False)
 
     # 周柱状图 HTML
@@ -707,11 +715,11 @@ def generate_html_report(
         nw_peak_hour = max(nw_hourly, key=nw_hourly.get) if nw_hourly else 0
         nw_repo = compute_repo_stats(non_working)
 
-        # 非工作时间热力图数据
+        # 非工作时间热力图数据（范围跟主热力图一致）
         nw_data_json = json.dumps({
             "daily_stats": nw_daily,
-            "since": since,
-            "until": until,
+            "since": data_start,
+            "until": data_end,
         }, ensure_ascii=False)
 
         # 统计卡片
@@ -814,7 +822,7 @@ def generate_html_report(
 <div class="tab-panel active" id="tab-all">
 
 <h1><span class="author">{author}</span> 的提交统计</h1>
-<p class="subtitle">{since} ~ {until} &nbsp;·&nbsp; {len(set(c.get('repo','') for c in commits))} 个仓库 &nbsp;·&nbsp; 共 {total_commits} 条提交</p>
+<p class="subtitle">{data_start} ~ {data_end} &nbsp;·&nbsp; {len(set(c.get('repo','') for c in commits))} 个仓库 &nbsp;·&nbsp; 共 {total_commits} 条提交 &nbsp;·&nbsp; {total_days} 天</p>
 
 <!-- Summary Cards -->
 <div class="cards">
@@ -898,7 +906,7 @@ def generate_html_report(
 <div class="tab-panel" id="tab-nonworking">
 
 <h1>⏰ <span class="author">{author}</span> 的非工作时间提交</h1>
-<p class="subtitle">工作日 9:00-20:00 以外（含周末、法定节假日，已考虑调休）&nbsp;·&nbsp; {since} ~ {until}</p>
+<p class="subtitle">工作日 9:00-20:00 以外（含周末、法定节假日，已考虑调休）&nbsp;·&nbsp; {data_start} ~ {data_end}</p>
 
 {nw_cards}
 
@@ -925,6 +933,11 @@ function switchTab(id, btn) {{
   panel.querySelectorAll('.heatmap-wrapper').forEach(function(w) {{ w.scrollLeft = w.scrollWidth; }});
 }}
 
+function parseYMD(str) {{
+  var p = str.split('-');
+  return new Date(+p[0], +p[1] - 1, +p[2]);
+}}
+
 function fmtDate(d) {{
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }}
@@ -932,12 +945,14 @@ function fmtDate(d) {{
 // Heatmap rendering helper
 function renderHeatmap(monthsDivId, bodyDivId, data) {{
   var daily = data.daily_stats;
-  var since = new Date(data.since + 'T00:00:00');
-  var until = new Date(data.until + 'T00:00:00');
+  var since = parseYMD(data.since);
+  var until = parseYMD(data.until);
 
+  // Start from the Monday on or before the first commit
   var start = new Date(since);
   start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
 
+  // End on the Sunday on or after the last commit
   var end = new Date(until);
   end.setDate(end.getDate() + (7 - end.getDay()) % 7);
 
