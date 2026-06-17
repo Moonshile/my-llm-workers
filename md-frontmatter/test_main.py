@@ -118,6 +118,21 @@ def test_extract_title_from_content(content, expected):
 
 
 # ============================================================
+# _clean_filename_title
+# ============================================================
+
+@pytest.mark.parametrize("stem,expected", [
+    ("2026-06-15-噩梦", "噩梦"),
+    ("2026-01-01-docker-guide", "docker-guide"),
+    ("no-date-prefix", "no-date-prefix"),
+    ("2026-06-01", "2026-06-01"),  # no text after date → keep as-is
+    ("2026-06-01-", "2026-06-01-"),  # trailing dash, nothing after → keep as-is
+])
+def test_clean_filename_title(stem, expected):
+    assert fm._clean_filename_title(stem) == expected
+
+
+# ============================================================
 # format_frontmatter
 # ============================================================
 
@@ -136,6 +151,28 @@ def test_format_frontmatter_multi_tags():
 def test_format_frontmatter_empty_tags():
     result = fm.format_frontmatter({"title": "T", "date": "2026-01-01", "tags": []})
     assert "tags: []" in result
+
+
+def test_format_frontmatter_quotes_numeric_tags():
+    """纯数字标签应加双引号，防止 YAML 解析为整数。"""
+    result = fm.format_frontmatter({"title": "T", "date": "2026-01-01", "tags": ["06"]})
+    assert 'tags: ["06"]' in result
+
+
+def test_format_frontmatter_quotes_boolean_like_tags():
+    """布尔/空值类标签应加双引号。"""
+    result = fm.format_frontmatter({"title": "T", "date": "2026-01-01", "tags": ["true", "null", "yes"]})
+    assert '"true"' in result
+    assert '"null"' in result
+    assert '"yes"' in result
+
+
+def test_format_frontmatter_mixed_tags():
+    """中文标签不加引号，数字标签加引号。"""
+    result = fm.format_frontmatter({"title": "T", "date": "2026-01-01", "tags": ["育儿", "06", "公园"]})
+    assert "育儿" in result and '"育儿"' not in result
+    assert '"06"' in result
+    assert "公园" in result and '"公园"' not in result
 
 
 # ============================================================

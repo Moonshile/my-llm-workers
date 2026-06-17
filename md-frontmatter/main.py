@@ -156,13 +156,13 @@ def frontmatter_missing_tags(content: str) -> bool:
     if not m:
         return False
     fm_block = m.group(1)
-    tags_match = re.search(r"^tags:\s*(.+)$", fm_block, re.MULTILINE)
-    if not tags_match:
-        return True  # 完全没有 tags 行
-    tags_val = tags_match.group(1).strip()
-    # 匹配 []、[ ] 等空列表
-    if re.match(r"^\[\s*\]$", tags_val):
+    # 检查是否有 tags 字段
+    if not re.search(r"^tags:", fm_block, re.MULTILINE):
+        return True  # 完全没有 tags 字段
+    # 行内空列表: tags: [] 或 tags: [ ]
+    if re.search(r"^tags:\s*\[\s*\]", fm_block, re.MULTILINE):
         return True
+    # 有内容的 tags（行内列表或块列表）认为 tags 存在
     return False
 
 
@@ -188,6 +188,12 @@ def extract_title_from_content(content: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _clean_filename_title(stem: str) -> str:
+    """剥掉文件名中的日期前缀（如 2026-06-15-），返回干净标题。"""
+    m = re.match(r"^\d{4}-\d{2}-\d{2}-(.+)", stem)
+    return m.group(1) if m else stem
+
+
 # ---------- LLM 元数据生成 ----------
 
 def build_metadata_prompt(content: str, filepath: Path) -> str:
@@ -204,9 +210,9 @@ File info:
 - Parent directory: {filepath.parent.name}
 
 Requirements:
-- title: Concise, descriptive title. If the first heading is already a good title, use it (in the original language). Otherwise write one.
+- title: Concise, descriptive title. If the first heading is already a good title, use it (in the original language). Otherwise write one. Do NOT include date in the title (date goes in its own field).
 - date: Publication date in YYYY-MM-DD format. Extract from filename if it contains a date, otherwise estimate.
-- tags: 3-5 relevant tags as a flat list. Use short, search-friendly terms (Chinese or English as appropriate). Include the parent directory name as one tag if relevant.
+- tags: 3-5 relevant tags as a flat list. Use short, search-friendly terms (Chinese or English as appropriate).
 
 Return ONLY valid JSON (no markdown code fences, no extra text):
 {{"title": "...", "date": "YYYY-MM-DD", "tags": ["tag1", "tag2", "tag3"]}}
@@ -288,7 +294,7 @@ def generate_metadata(content: str, filepath: Path, config: dict, logger: loggin
         }
     except Exception as e:
         logger.warning("    LLM 调用失败 (%s)，回退到启发式模式", e)
-        title = extract_title_from_content(content) or filepath.stem
+        title = extract_title_from_content(content) or _clean_filename_title(filepath.stem)
         date = extract_date_from_filename(filepath) or extract_date_from_mtime(filepath)
         tags = ["LLM 生成失败，需要手动补充标签"]
         return {"title": title, "date": date, "tags": tags}
@@ -303,15 +309,29 @@ def format_frontmatter(metadata: dict) -> str:
     lines.append(f"date: {metadata['date']}")
 
     tags = metadata.get("tags", [])
-    if not tags:
+    # 对标签加 YAML 引号保护（纯数字、布尔值等会被 YAML 误解析）
+    safe_tags = [_quote_yaml_tag(t) for t in tags]
+    if not safe_tags:
         lines.append("tags: []")
-    elif len(tags) == 1:
-        lines.append(f"tags: [{tags[0]}]")
+    elif len(safe_tags) == 1:
+        lines.append(f"tags: [{safe_tags[0]}]")
     else:
-        lines.append("tags: [" + ", ".join(tags) + "]")
+        lines.append("tags: [" + ", ".join(safe_tags) + "]")
 
     lines.append("---")
     return "\n".join(lines) + "\n"
+
+
+def _quote_yaml_tag(tag: str) -> str:
+    """对需要保护的标签加 YAML 双引号（如纯数字、布尔值）。"""
+    # YAML 会自动解析的类型：整数/浮点、bool、null
+    if re.match(r"^\d+$", tag):       # 纯数字 "06" "2026"
+        return f'"{tag}"'
+    if re.match(r"^\d+\.\d+$", tag):  # 浮点 "1.5"
+        return f'"{tag}"'
+    if tag.lower() in ("true", "false", "yes", "no", "on", "off", "null", "nil", "~"):
+        return f'"{tag}"'
+    return tag
 
 
 # ---------- 目录处理 ----------
