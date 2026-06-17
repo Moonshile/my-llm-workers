@@ -239,7 +239,7 @@ def call_llm(prompt: str, config: dict, logger: logging.Logger) -> dict:
             api_base=api_base,
             api_key=api_key,
             temperature=0.3,
-            max_tokens=300,
+            max_tokens=5000,
             timeout=60,
         )
     except Exception as e:
@@ -290,7 +290,7 @@ def generate_metadata(content: str, filepath: Path, config: dict, logger: loggin
         logger.warning("    LLM 调用失败 (%s)，回退到启发式模式", e)
         title = extract_title_from_content(content) or filepath.stem
         date = extract_date_from_filename(filepath) or extract_date_from_mtime(filepath)
-        tags = [filepath.parent.name]
+        tags = ["LLM 生成失败，需要手动补充标签"]
         return {"title": title, "date": date, "tags": tags}
 
 

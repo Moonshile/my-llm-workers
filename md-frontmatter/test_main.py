@@ -220,7 +220,7 @@ def test_generate_metadata_llm_failure_falls_back():
 
     assert result["title"] == "回退标题"
     assert result["date"] == "2026-04-04"
-    assert result["tags"] == ["技术"]
+    assert result["tags"] == ["LLM 生成失败，需要手动补充标签"]
 
 
 def test_generate_metadata_partial_llm_result():
