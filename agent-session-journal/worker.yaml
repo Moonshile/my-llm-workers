@@ -13,5 +13,22 @@ schedule:
 run: "python main.py"
 
 # 非保密配置（保密/隐私配置在 .env 中）
+# model: LLM 模型名（.env 的 MODEL 可覆盖，无 MODEL 时使用此值）
+model: deepseek-v4-flash
 max_chunk_chars: 500000
 chunk_overlap: 2000
+# 批量处理：每批最多处理的 session 数
+batch_size: 5
+
+# 模型计费表（¥/1M tokens），匹配到前缀即生效
+# DeepSeek 系列模型的计费统一在此配置，定期同步官方定价
+# cache_hit_input: 缓存命中时的输入价格（可选，未配置则等同于 input）
+model_pricing:
+  deepseek-v4-pro:
+    input: 3                 # cache miss
+    output: 6
+    cache_hit_input: 0.025   # cache hit
+  deepseek-v4-flash:
+    input: 1                 # cache miss
+    output: 2
+    cache_hit_input: 0.02    # cache hit

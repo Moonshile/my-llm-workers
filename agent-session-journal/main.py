@@ -40,13 +40,16 @@ class _SessionStats:
         self.requests = 0
         self.input_tokens = 0
         self.output_tokens = 0
+        self.cache_read_tokens = 0
         self.total_cost = 0.0
         self.cost_estimated = False
 
-    def record(self, input_t: int, output_t: int, cost: Optional[float], estimated: bool):
+    def record(self, input_t: int, output_t: int, cost: Optional[float], estimated: bool,
+               cache_read_t: int = 0):
         self.requests += 1
         self.input_tokens += input_t
         self.output_tokens += output_t
+        self.cache_read_tokens += cache_read_t
         if cost is not None:
             self.total_cost += cost
             if estimated:
@@ -54,13 +57,16 @@ class _SessionStats:
 
     def summary(self) -> str:
         cost_label = "预估" if self.cost_estimated else ""
-        return (
-            f"requests={self.requests}, "
-            f"input_tokens={self.input_tokens}, "
-            f"output_tokens={self.output_tokens}, "
-            f"total_tokens={self.input_tokens + self.output_tokens}, "
-            f"{cost_label}cost=${self.total_cost:.6f}"
-        )
+        parts = [
+            f"requests={self.requests}",
+            f"input_tokens={self.input_tokens}",
+            f"output_tokens={self.output_tokens}",
+            f"total_tokens={self.input_tokens + self.output_tokens}",
+        ]
+        if self.cache_read_tokens > 0:
+            parts.append(f"cache_hit={self.cache_read_tokens}")
+        parts.append(f"{cost_label}cost=¥{self.total_cost:.6f}")
+        return ", ".join(parts)
 
 
 # 当前 session 的统计，process_session 开始时重置
@@ -127,10 +133,10 @@ def get_config() -> dict:
     load_dotenv(TOOL_DIR / ".env")
     worker_cfg = load_worker_config()
 
-    # 保密配置仅从 .env 读取
+    # 保密配置仅从 .env 读取（model 可从 worker.yaml 回退）
     api_base = os.environ.get("API_BASE")
     api_key = os.environ.get("API_KEY")
-    model = os.environ.get("MODEL")
+    model = os.environ.get("MODEL") or worker_cfg.get("model")
 
     missing = []
     if not api_base:
@@ -138,7 +144,7 @@ def get_config() -> dict:
     if not api_key:
         missing.append("API_KEY")
     if not model:
-        missing.append("MODEL")
+        missing.append("MODEL（.env 或 worker.yaml）")
 
     if missing:
         print(f"错误：缺少以下环境变量: {', '.join(missing)}")
@@ -182,6 +188,23 @@ def get_config() -> dict:
         worker_cfg.get("chunk_overlap", 1000),
     ))
 
+    # 模型计费表：优先 worker.yaml 配置，用于覆盖/补充硬编码计费表
+    # 格式：{prefix: {input, output, cache_hit_input?}}
+    model_pricing_cfg = worker_cfg.get("model_pricing", {})
+    model_pricing: dict[str, dict] = {}
+    if isinstance(model_pricing_cfg, dict):
+        for prefix, prices in model_pricing_cfg.items():
+            if isinstance(prices, dict) and "input" in prices and "output" in prices:
+                entry: dict = {
+                    "input": float(prices["input"]),
+                    "output": float(prices["output"]),
+                }
+                if "cache_hit_input" in prices:
+                    entry["cache_hit_input"] = float(prices["cache_hit_input"])
+                model_pricing[prefix] = entry
+
+    batch_size = int(worker_cfg.get("batch_size", 5))
+
     return {
         "api_base": api_base,
         "api_key": api_key,
@@ -191,6 +214,8 @@ def get_config() -> dict:
         "max_chunk_chars": max_chunk_chars,
         "chunk_overlap": chunk_overlap,
         "serious_work_paths": serious_work_paths,
+        "model_pricing": model_pricing,
+        "batch_size": batch_size,
     }
 
 
@@ -624,6 +649,83 @@ def get_existing_categories(output_dir: Path) -> list[str]:
 
 
 # ============================================================================
+# 预扫描
+# ============================================================================
+
+def pre_scan_sessions(sessions: list[dict], config: dict) -> list[dict]:
+    """
+    预扫描所有 session，过滤出确实需要处理的。
+
+    对每个 session：
+    1. 检查是否有新内容（mtime > last_processed_ts）
+    2. 提取对话，过滤空内容
+    3. 返回需要处理的 session 列表（含预提取的 transcript）
+
+    返回 [{session, transcript, is_update, ref_content, last_processed_ts, prev_daily_info}]
+    """
+    output_dir = config["output_dir"]
+    to_process = []
+
+    for session in sessions:
+        sid = session["session_id"]
+        jsonl_path = session.get("jsonl_path")
+        mtime = session["mtime"]
+
+        # 查找已有文档
+        existing_doc_path = find_existing_document(output_dir, sid)
+        existing_doc_content = None
+        last_processed_ts = None
+        prev_daily_info = None
+
+        if existing_doc_path:
+            try:
+                content = existing_doc_path.read_text(encoding="utf-8")
+                fm = parse_frontmatter(content)
+                if fm:
+                    last_processed_ts = fm.get("last_processed_timestamp")
+                existing_doc_content = content
+            except Exception:
+                pass
+        else:
+            prev_daily_info = _find_session_in_daily_briefs(output_dir, sid)
+            if prev_daily_info:
+                last_processed_ts = prev_daily_info.get("last_processed_timestamp")
+
+        # 跳过无新内容的 session
+        if last_processed_ts is not None and mtime <= last_processed_ts:
+            logger.debug("  SKIP  %s (无新内容)", sid[:20])
+            continue
+
+        # 提取对话
+        transcript = extract_condensed_transcript(
+            jsonl_path,
+            since_timestamp=last_processed_ts,
+        )
+
+        if not transcript.strip():
+            logger.debug("  SKIP  %s (对话为空)", sid[:20])
+            continue
+
+        # 构造参考内容（用于增量更新）
+        is_update = existing_doc_content is not None or prev_daily_info is not None
+        ref_content = existing_doc_content
+        if prev_daily_info and not ref_content:
+            ref_content = f"此前已记录：{prev_daily_info.get('title', '')}"
+
+        to_process.append({
+            "session": session,
+            "transcript": transcript,
+            "is_update": is_update,
+            "ref_content": ref_content,
+            "last_processed_ts": last_processed_ts,
+            "prev_daily_info": prev_daily_info,
+            "existing_doc_path": str(existing_doc_path) if existing_doc_path else None,
+        })
+
+    return to_process
+
+
+# ============================================================================
 # LLM 调用
 # ============================================================================
 
@@ -734,27 +836,39 @@ def call_llm(prompt: str, config: dict, label: str = "") -> dict:
         input_tokens = getattr(usage, "prompt_tokens", 0) or 0
         output_tokens = getattr(usage, "completion_tokens", 0) or 0
         total_tokens = getattr(usage, "total_tokens", 0) or input_tokens + output_tokens
+        # 缓存命中 token（Anthropic: cache_read_input_tokens, DeepSeek 兼容）
+        cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+        if cache_read_tokens == 0:
+            # DeepSeek 可能用 prompt_cache_hit_tokens 或其它字段
+            cache_read_tokens = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
         # 优先取 LiteLLM 跟踪的 cost，否则本地估算
         cost = None
         if hasattr(response, "_hidden_params"):
             cost = response._hidden_params.get("response_cost", None)
         estimated = cost is None
         if estimated:
-            cost = _estimate_cost(model, input_tokens, output_tokens)
-        cost_str = f", 预估费用 ${cost:.6f}" if estimated and cost is not None else (
-            f", 费用 ${cost:.6f}" if cost is not None else ""
+            cost = _estimate_cost(model, input_tokens, output_tokens,
+                                  model_pricing=config.get("model_pricing"),
+                                  cache_read_tokens=cache_read_tokens)
+        # 构造日志中的缓存命中信息
+        cache_str = ""
+        if cache_read_tokens > 0:
+            cache_str = f", cache_hit={cache_read_tokens}"
+        cost_str = f", 预估费用 ¥{cost:.6f}" if estimated and cost is not None else (
+            f", 费用 ¥{cost:.6f}" if cost is not None else ""
         )
         logger.debug(
-            "  LLM 计费: input=%d, output=%d, total=%d tokens%s",
-            input_tokens, output_tokens, total_tokens, cost_str,
+            "  LLM 计费: input=%d, output=%d, total=%d tokens%s%s",
+            input_tokens, output_tokens, total_tokens, cache_str, cost_str,
         )
         logger.info(
-            "  LLM 完成: %d input + %d output = %d tokens%s",
-            input_tokens, output_tokens, total_tokens, cost_str,
+            "  LLM 完成: %d input + %d output = %d tokens%s%s",
+            input_tokens, output_tokens, total_tokens, cache_str, cost_str,
         )
         # 累计到 session 统计
         if _current_stats is not None:
-            _current_stats.record(input_tokens, output_tokens, cost, estimated)
+            _current_stats.record(input_tokens, output_tokens, cost, estimated,
+                                  cache_read_tokens=cache_read_tokens)
     else:
         logger.debug("  LLM 完成: 无 usage 信息")
 
@@ -767,29 +881,57 @@ def call_llm(prompt: str, config: dict, label: str = "") -> dict:
     return json.loads(text)
 
 
-# 模型预估单价（USD / 1M tokens），用于 LiteLLM 无法提供 cost 时的本地估算
+# 模型预估单价（¥/1M tokens），用于 LiteLLM 无法提供 cost 时的本地估算
+# 注意：前缀匹配，更具体的条目放在前面
+# DeepSeek 系列模型的计费统一在 worker.yaml 的 model_pricing 中配置，
+# 此处的 deepseek 条目仅作为未配置时的默认回退
 _MODEL_PRICING: dict[str, tuple[float, float]] = {
-    # (input_price, output_price) per 1M tokens
-    "claude-opus-4": (15.0, 75.0),
-    "claude-sonnet-4": (3.0, 15.0),
-    "claude-haiku-4": (0.80, 4.0),
-    "claude-fable-5": (3.0, 15.0),
-    "gpt-4o": (2.50, 10.0),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4.1": (2.00, 8.0),
-    "deepseek-chat": (0.27, 1.10),
-    "deepseek-reasoner": (0.55, 2.19),
-    "deepseek-v3": (0.27, 1.10),
-    "deepseek-r1": (0.55, 2.19),
-    "deepseek-v4": (0.27, 1.10),
-    "gemini-2.5-flash": (0.15, 0.60),
-    "gemini-2.5-pro": (1.25, 10.0),
+    # (input_price, output_price) per 1M tokens, unit: ¥
+    "claude-opus-4": (108.0, 540.0),
+    "claude-sonnet-4": (22.0, 108.0),
+    "claude-haiku-4": (5.8, 29.0),
+    "claude-fable-5": (22.0, 108.0),
+    "gpt-4o": (18.0, 72.0),
+    "gpt-4o-mini": (1.1, 4.3),
+    "gpt-4.1": (14.4, 57.6),
+    "gemini-2.5-flash": (1.1, 4.3),
+    "gemini-2.5-pro": (9.0, 72.0),
+    # DeepSeek 默认回退（优先使用 worker.yaml 中的配置）
+    "deepseek-v4-pro": (3.0, 6.0),
+    "deepseek-v4-flash": (1.0, 2.0),
+    "deepseek-v4": (3.0, 6.0),
+    "deepseek-v3": (2.0, 8.0),
+    "deepseek-r1": (4.0, 16.0),
+    "deepseek-chat": (2.0, 8.0),
+    "deepseek-reasoner": (4.0, 16.0),
 }
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
-    """根据模型名和 token 用量估算费用。匹配不到返回 None。"""
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int,
+                   model_pricing: Optional[dict[str, dict]] = None,
+                   cache_read_tokens: int = 0) -> Optional[float]:
+    """根据模型名和 token 用量估算费用。匹配不到返回 None。
+
+    model_pricing 来自 worker.yaml 配置，优先级高于硬编码 _MODEL_PRICING。
+    cache_read_tokens: 缓存命中的输入 token 数（适用缓存命中价）。
+    """
     model_lower = model.lower()
+    # 先查 worker.yaml 配置的计费表（支持 cache_hit_input）
+    if model_pricing:
+        for prefix, prices in model_pricing.items():
+            if prefix in model_lower:
+                in_price = prices["input"]
+                out_price = prices["output"]
+                cache_hit_price = prices.get("cache_hit_input")
+                if cache_read_tokens > 0 and cache_hit_price is not None:
+                    miss_tokens = max(0, input_tokens - cache_read_tokens)
+                    return (
+                        (miss_tokens / 1_000_000) * in_price
+                        + (cache_read_tokens / 1_000_000) * cache_hit_price
+                        + (output_tokens / 1_000_000) * out_price
+                    )
+                return (input_tokens / 1_000_000) * in_price + (output_tokens / 1_000_000) * out_price
+    # 再查硬编码计费表（无缓存命中区分）
     for prefix, (in_price, out_price) in _MODEL_PRICING.items():
         if prefix in model_lower:
             return (input_tokens / 1_000_000) * in_price + (output_tokens / 1_000_000) * out_price
@@ -915,6 +1057,285 @@ def _synthesize_chunks(chunk_results: list[dict], config: dict, session_meta: di
 严格基于对话原文，不猜测。"""
 
     return call_llm(prompt, config)
+
+
+# ============================================================================
+# 批量处理
+# ============================================================================
+
+def build_batch_prompt(batch: list[dict], config: dict, existing_categories: list[str]) -> str:
+    """为多个 session 构造批量处理的 prompt。"""
+    n = len(batch)
+    cats_str = ", ".join(existing_categories) if existing_categories else "无"
+
+    parts = [
+        f"你是一个精准的工作日志生成器。请分析以下 {n} 个 Claude Code 会话记录，"
+        f"为每个生成结构化工作日志。",
+        "",
+        f"已有分类目录: {cats_str}（优先复用已有分类，不要用项目名作为分类）",
+        "",
+    ]
+
+    for i, info in enumerate(batch, 1):
+        s = info["session"]
+        parts.append(f"## 会话 {i}")
+        parts.append(f"- Session ID: {s['session_id']}")
+        parts.append(f"- 项目路径: {s['project_path']}")
+        parts.append(f"- 日期: {s.get('created_date', 'unknown')}")
+
+        if info["is_update"] and info["ref_content"]:
+            ref = info["ref_content"]
+            if len(ref) > 1500:
+                ref = ref[-1500:]
+            parts.append(f"- 说明: 增量更新，已有文档参考: {ref[:500]}...")
+
+        parts.append("")
+        parts.append("### 对话内容")
+        # 截断过长的对话（单 session 不超过 20000 字符）
+        transcript = info["transcript"]
+        if len(transcript) > 20000:
+            transcript = transcript[:20000] + "\n... (截断)"
+        parts.append(transcript)
+        parts.append("")
+
+    parts.append("## 输出要求")
+    parts.append("")
+    parts.append("为每个会话返回一个 JSON 对象，字段：")
+    parts.append("- `complexity`: \"simple\"(简单问答/单步操作) 或 \"complex\"(技术决策/多步调试)")
+    parts.append("- `title`: 描述性标题")
+    parts.append("- `tags`: 3-5个标签的数组")
+    parts.append("- `category`: 宽泛分类名（如 AI应用/工具脚本/前端开发/后端开发/文档写作/技术调研/部署与优化）")
+    parts.append("- `summary`: 一两句话总结（simple 模式的核心输出）")
+    parts.append("- `sections`: complex 时输出章节数组[{heading, content}], simple 时空数组")
+    parts.append("")
+    parts.append("严格只返回 JSON 数组（不含 markdown 代码块），顺序与输入一致：")
+    parts.append("```")
+    parts.append("[")
+    parts.append(f"  {{\"complexity\":\"...\", \"title\":\"...\", ...}},  // 会话 1")
+    parts.append(f"  {{\"complexity\":\"...\", \"title\":\"...\", ...}},  // 会话 2")
+    parts.append("  ...")
+    parts.append("]")
+    parts.append("```")
+
+    return "\n".join(parts)
+
+
+def _write_session_doc(session_info: dict, llm_result: dict, config: dict) -> Optional[str]:
+    """
+    将单个 session 的 LLM 分析结果写入文档。
+    simple → daily brief，complex → 独立文件。
+    返回文件路径或 None。
+    """
+    session = session_info["session"]
+    sid = session["session_id"]
+    project_path = session["project_path"]
+    mtime = session["mtime"]
+    mtime_date = session["mtime_date"]
+    created_date = session["created_date"]
+    jsonl_path = session.get("jsonl_path")
+    transcript = session_info["transcript"]
+    output_dir = config["output_dir"]
+    serious_paths = config.get("serious_work_paths", [])
+    prev_daily_info = session_info.get("prev_daily_info")
+    existing_doc_path_str = session_info.get("existing_doc_path")
+    existing_doc_path = Path(existing_doc_path_str) if existing_doc_path_str else None
+
+    # 处理标签和分类
+    tags = llm_result.get("tags", [])
+    if not isinstance(tags, list):
+        tags = [tags] if tags else []
+
+    is_serious = _is_serious_work(project_path, serious_paths)
+    if is_serious:
+        tags = _ensure_tags_include_serious(tags)
+
+    category = llm_result.get("category", "未分类")
+    if is_serious:
+        category = "严肃工作"
+    elif category == "严肃工作":
+        category = "未分类"
+    if not category or "/" in str(category):
+        category = "未分类"
+
+    # 计算 last_processed_timestamp
+    last_ts = _compute_last_processed_ts(transcript, jsonl_path)
+    if last_ts is None:
+        last_ts = mtime
+
+    title = llm_result.get("title", "Untitled")
+    processing_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    complexity = llm_result.get("complexity", "complex")
+
+    # 输出：simple → daily brief，complex → 独立文件
+    if complexity == "simple":
+        # 如果之前是独立文件，删除
+        if existing_doc_path:
+            try:
+                existing_doc_path.unlink()
+                logger.debug("  转为 simple，删除旧独立文件: %s", existing_doc_path)
+            except OSError:
+                pass
+
+        # 读取或创建 daily brief
+        daily_path = _find_daily_brief(output_dir, created_date)
+        if daily_path is None:
+            daily_dir = output_dir / "daily"
+            daily_dir.mkdir(parents=True, exist_ok=True)
+            daily_path = daily_dir / f"{created_date}-daily.md"
+
+        sessions_dict, _, _ = _read_daily_brief_sessions(daily_path) if daily_path.exists() else ({}, {}, "")
+
+        sessions_dict[sid] = {
+            "last_processed_timestamp": last_ts,
+            "title": title,
+            "project_path": project_path,
+            "category": category,
+            "summary": llm_result.get("summary", ""),
+        }
+
+        entries = [
+            {
+                "session_id": k,
+                "title": v["title"],
+                "project_path": v.get("project_path", ""),
+                "category": v.get("category", ""),
+                "summary": v.get("summary", ""),
+                "last_processed_timestamp": v["last_processed_timestamp"],
+            }
+            for k, v in sessions_dict.items()
+        ]
+        _write_daily_brief(daily_path, entries, created_date, processing_time)
+        if len(entries) == 1:
+            logger.info("  ✓ daily/%s-daily.md", created_date)
+        logger.info("[RESULT] session=%s complexity=simple category=%s file=daily/%s-daily.md entries=%d | %s",
+                    sid, category, created_date, len(entries), _current_stats.summary())
+        return str(daily_path)
+
+    else:
+        # Complex: 独立文件
+        if prev_daily_info:
+            old_daily = prev_daily_info["daily_path"]
+            sessions_dict, _, _ = _read_daily_brief_sessions(old_daily)
+            if sid in sessions_dict:
+                del sessions_dict[sid]
+                if sessions_dict:
+                    entries = [
+                        {
+                            "session_id": k,
+                            "title": v["title"],
+                            "project_path": v.get("project_path", ""),
+                            "category": v.get("category", ""),
+                            "summary": v.get("summary", ""),
+                            "last_processed_timestamp": v["last_processed_timestamp"],
+                        }
+                        for k, v in sessions_dict.items()
+                    ]
+                    _write_daily_brief(old_daily, entries, created_date, processing_time)
+                else:
+                    try:
+                        old_daily.unlink()
+                    except OSError:
+                        pass
+
+        frontmatter_meta = {
+            "title": title,
+            "date": mtime_date,
+            "tags": tags,
+            "session_id": sid,
+            "project_path": project_path,
+            "last_processed_timestamp": last_ts,
+        }
+        fm = format_frontmatter(frontmatter_meta)
+        body = _build_document_content(llm_result, session, processing_time)
+        full_doc = fm + "\n" + body
+
+        slug = slugify(title)
+        filename = f"{created_date}-{slug}.md"
+        cat_dir = output_dir / category
+        cat_dir.mkdir(parents=True, exist_ok=True)
+        new_path = cat_dir / filename
+
+        if existing_doc_path and existing_doc_path != new_path:
+            try:
+                existing_doc_path.unlink()
+                logger.debug("  删除旧文件: %s", existing_doc_path)
+            except OSError:
+                pass
+
+        new_path.write_text(full_doc, encoding="utf-8")
+        logger.info("  ✓ %s/%s", category, filename)
+        logger.info("[RESULT] session=%s complexity=complex category=%s file=%s/%s | %s",
+                    sid, category, category, filename, _current_stats.summary())
+        return str(new_path)
+
+
+def process_batch(batch: list[dict], config: dict, dry_run: bool = False) -> int:
+    """
+    批量处理多个 session：一次 LLM 调用 → 多份文档。
+
+    返回成功处理的 session 数。
+    """
+    global _current_stats
+    _current_stats = _SessionStats()
+
+    if not batch:
+        return 0
+
+    output_dir = config["output_dir"]
+    existing_cats = get_existing_categories(output_dir)
+    n = len(batch)
+
+    if dry_run:
+        total_chars = sum(len(info["transcript"]) for info in batch)
+        logger.info("  DRY-RUN 批量处理 %d 个 session (%d chars)", n, total_chars)
+        return 0
+
+    # 构造 prompt 并调用 LLM
+    prompt = build_batch_prompt(batch, config, existing_cats)
+    logger.info("  批量处理 %d 个 session, prompt=%d chars", n, len(prompt))
+
+    try:
+        response = call_llm(prompt, config, label=f"batch-{n}")
+    except Exception as e:
+        logger.error("  批量 LLM 调用失败: %s", e)
+        return 0
+
+    # 解析响应：期望 JSON 数组
+    if isinstance(response, list):
+        results = response
+    elif isinstance(response, dict):
+        # 可能被包在 {"sessions": [...]} 或 {"results": [...]} 中
+        results = response.get("sessions") or response.get("results") or []
+        if not isinstance(results, list):
+            logger.error("  批量响应格式错误：期望数组，得到 %s", type(response).__name__)
+            return 0
+    else:
+        logger.error("  批量响应格式错误：期望数组，得到 %s", type(response).__name__)
+        return 0
+
+    # 对齐：确保 results 数量与 batch 一致
+    if len(results) != n:
+        logger.warning("  批量响应数量不匹配: 期望 %d, 得到 %d", n, len(results))
+        # 截断或补空
+        while len(results) < n:
+            results.append({"complexity": "simple", "title": "未知", "tags": [],
+                           "category": "未分类", "summary": "LLM 未返回结果", "sections": []})
+        results = results[:n]
+
+    # 写入各 session 文档
+    processed = 0
+    for i, (info, result) in enumerate(zip(batch, results)):
+        if not isinstance(result, dict):
+            logger.warning("  会话 %d/%d 结果非 dict，跳过", i + 1, n)
+            continue
+        try:
+            path = _write_session_doc(info, result, config)
+            if path:
+                processed += 1
+        except Exception as e:
+            logger.error("  会话 %d/%d 写入失败: %s", i + 1, n, e)
+
+    return processed
 
 
 def _write_daily_brief(daily_path: Path, sessions_entries: list[dict],
@@ -1360,44 +1781,134 @@ def main():
         print(fm + "\n" + body)
         return
 
-    logger.info("发现 %d 个待处理 session（排除当天修改）", len(sessions))
-
+    # --session-id 模式：单个 session，保留完整处理逻辑（含分块）
     if args.session_id:
-        sessions = [s for s in sessions if s["session_id"] == args.session_id]
-        if not sessions:
+        target = [s for s in sessions if s["session_id"] == args.session_id]
+        if not target:
             logger.error("未找到 session: %s", args.session_id)
             sys.exit(1)
-        logger.info("筛选指定 session: %s", args.session_id)
+        session = target[0]
+        logger.info("处理指定 session: %s", args.session_id)
+        try:
+            result_path = process_session(session, config, dry_run=args.dry_run)
+            if result_path:
+                logger.info("完成: %s", result_path)
+            else:
+                logger.info("跳过（无新内容或 dry-run）")
+        except Exception:
+            logger.error("处理出错", exc_info=True)
+            sys.exit(1)
+        return
 
-    # 处理
-    total = len(sessions)
+    # 预扫描：过滤出确实需要处理的 session
+    logger.info("发现 %d 个 session（排除当天修改），开始预扫描...", len(sessions))
+    to_process = pre_scan_sessions(sessions, config)
+    logger.info("预扫描完成: %d 个需要处理，%d 个跳过",
+                len(to_process), len(sessions) - len(to_process))
+    logger.info("")
+
+    if not to_process:
+        logger.info("没有需要处理的 session。")
+        return
+
+    # 分组：长对话独立处理，短对话批量
+    batch_size = config.get("batch_size", 5)
+    max_chars = config.get("max_chunk_chars", 8000)
+    individual_queue = []
+    batch_queue = []
+
+    for info in to_process:
+        transcript_len = len(info["transcript"])
+        if transcript_len > max_chars or info["is_update"]:
+            # 长对话或增量更新 → 独立处理（保留分块和增量逻辑）
+            individual_queue.append(info)
+        else:
+            batch_queue.append(info)
+
+    logger.info("分组: %d 个独立处理, %d 个批量处理 (%d 个/批)",
+                len(individual_queue), len(batch_queue), batch_size)
+
+    # 全局 LLM 统计
+    global_requests = 0
+    global_input_tokens = 0
+    global_output_tokens = 0
+    global_cache_read_tokens = 0
+    global_cost = 0.0
+    global_cost_estimated = False
+
     processed = 0
     skipped = 0
     errors = 0
+    total = len(to_process)
 
-    for idx, session in enumerate(sessions, 1):
-        sid = session["session_id"]
-        short_id = sid[:20] if len(sid) > 20 else sid
-        logger.info("[%d/%d] [%s] %s", idx, total, session["mtime_date"], short_id)
+    # 生成批次
+    batches = [batch_queue[i:i + batch_size] for i in range(0, len(batch_queue), batch_size)]
+    # 独立处理的 session 每个单独一"批"
+    for info in individual_queue:
+        batches.append([info])
+
+    for batch_idx, batch in enumerate(batches, 1):
+        n = len(batch)
+        # 进度显示
+        if n == 1:
+            s = batch[0]["session"]
+            sid = s["session_id"]
+            short_id = sid[:20] if len(sid) > 20 else sid
+            logger.info("[%d/%d] [%s] %s (独立)", batch_idx, len(batches),
+                       s["mtime_date"], short_id)
+        else:
+            logger.info("[%d/%d] 批量 %d 个 session", batch_idx, len(batches), n)
 
         try:
-            result = process_session(session, config, dry_run=args.dry_run)
-            if result:
-                processed += 1
+            if n == 1 and batch[0] in individual_queue:
+                # 独立处理：使用原有的完整流程（含分块/增量）
+                info = batch[0]
+                session = info["session"]
+                # 构造 ref_content 供 process_session 使用（需临时设置）
+                # process_session 内部会重新查找，但我们的 pre_scan 已经做了
+                # 直接调用即可（它内部会再次检查 mtime 和提取 transcript）
+                result_path = process_session(session, config, dry_run=args.dry_run)
+                if result_path:
+                    processed += 1
+                else:
+                    skipped += 1
             else:
-                skipped += 1
-        except Exception:
-            logger.error("[%s] 处理出错", short_id, exc_info=True)
-            errors += 1
+                # 批量处理
+                batch_processed = process_batch(batch, config, dry_run=args.dry_run)
+                processed += batch_processed
+                skipped += (n - batch_processed)
 
-        logger.info("[进度] %d/%d 完成（处理 %d，跳过 %d，错误 %d）",
-                    idx, total, processed, skipped, errors)
+            # 累计全局统计
+            if _current_stats is not None:
+                global_requests += _current_stats.requests
+                global_input_tokens += _current_stats.input_tokens
+                global_output_tokens += _current_stats.output_tokens
+                global_cache_read_tokens += _current_stats.cache_read_tokens
+                global_cost += _current_stats.total_cost
+                if _current_stats.cost_estimated:
+                    global_cost_estimated = True
+        except Exception:
+            logger.error("[批次 %d] 处理出错", batch_idx, exc_info=True)
+            errors += n
+
+        logger.info("[进度] %d/%d 批次完成（处理 %d，跳过 %d，错误 %d）",
+                    batch_idx, len(batches), processed, skipped, errors)
 
     logger.info("")
     logger.info("=== 汇总 ===")
-    logger.info("已处理: %d", processed)
-    logger.info("已跳过: %d", skipped)
-    logger.info("错误:   %d", errors)
+    logger.info("Session: 预扫描 %d → 处理 %d / 跳过 %d / 错误 %d",
+                len(sessions), processed, skipped, errors)
+    if global_requests > 0:
+        total_tokens = global_input_tokens + global_output_tokens
+        cost_label = "预估" if global_cost_estimated else ""
+        cache_str = ""
+        if global_cache_read_tokens > 0:
+            cache_str = f", 缓存命中 {global_cache_read_tokens}"
+        logger.info(
+            "LLM: %d 次调用, input=%d output=%d total=%d%s, %scost=¥%.6f",
+            global_requests, global_input_tokens, global_output_tokens,
+            total_tokens, cache_str, cost_label, global_cost,
+        )
     if args.dry_run:
         logger.info("[预览模式] 未实际调用 LLM。")
 
