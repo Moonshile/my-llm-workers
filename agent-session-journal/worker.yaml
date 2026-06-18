@@ -13,8 +13,6 @@ schedule:
 run: "python main.py"
 
 # 非保密配置（保密/隐私配置在 .env 中）
-# model: LLM 模型名（.env 的 MODEL 可覆盖，无 MODEL 时使用此值）
-model: deepseek-v4-flash
 max_chunk_chars: 500000
 chunk_overlap: 2000
 # 批量处理：每批最多处理的 session 数

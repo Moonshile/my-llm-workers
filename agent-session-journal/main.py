@@ -133,10 +133,10 @@ def get_config() -> dict:
     load_dotenv(TOOL_DIR / ".env")
     worker_cfg = load_worker_config()
 
-    # 保密配置仅从 .env 读取（model 可从 worker.yaml 回退）
+    # 保密配置仅从 .env 读取
     api_base = os.environ.get("API_BASE")
     api_key = os.environ.get("API_KEY")
-    model = os.environ.get("MODEL") or worker_cfg.get("model")
+    model = os.environ.get("MODEL")
 
     missing = []
     if not api_base:
@@ -144,7 +144,7 @@ def get_config() -> dict:
     if not api_key:
         missing.append("API_KEY")
     if not model:
-        missing.append("MODEL（.env 或 worker.yaml）")
+        missing.append("MODEL")
 
     if missing:
         print(f"错误：缺少以下环境变量: {', '.join(missing)}")
