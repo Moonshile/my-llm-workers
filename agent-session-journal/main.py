@@ -865,10 +865,13 @@ def call_llm(prompt: str, config: dict, label: str = "") -> dict:
             "  LLM 完成: %d input + %d output = %d tokens%s%s",
             input_tokens, output_tokens, total_tokens, cache_str, cost_str,
         )
-        # 累计到 session 统计
+        # 累计到 session 统计（统计失败不影响主流程）
         if _current_stats is not None:
-            _current_stats.record(input_tokens, output_tokens, cost, estimated,
-                                  cache_read_tokens=cache_read_tokens)
+            try:
+                _current_stats.record(input_tokens, output_tokens, cost, estimated,
+                                      cache_read_t=cache_read_tokens)
+            except Exception as e:
+                logger.debug("  统计记录异常: %s", e)
     else:
         logger.debug("  LLM 完成: 无 usage 信息")
 
