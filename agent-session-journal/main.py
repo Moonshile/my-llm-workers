@@ -805,7 +805,7 @@ def call_llm(prompt: str, config: dict, label: str = "") -> dict:
             "role": "system",
             "content": (
                 "你是一个精准的工作日志生成器。"
-                "请严格只返回 JSON，不要 markdown 代码块，不要其他任何文字。"
+                "请用 ```json ``` 代码块包裹 JSON，不要其他任何文字。"
             ),
         },
         {"role": "user", "content": prompt},
@@ -877,23 +877,13 @@ def call_llm(prompt: str, config: dict, label: str = "") -> dict:
 
     text = response.choices[0].message.content.strip()
 
-    # 尝试提取 JSON（优先数组，其次对象，可能被 markdown 代码块包裹）
-    # 1) JSON 数组（批量响应）
-    arr_match = re.search(r"\[[\s\S]*\]", text)
-    if arr_match:
-        try:
-            return json.loads(arr_match.group())
-        except json.JSONDecodeError:
-            pass
-    # 2) JSON 对象（单个响应）
-    obj_match = re.search(r"\{[\s\S]*\}", text)
-    if obj_match:
-        try:
-            return json.loads(obj_match.group())
-        except json.JSONDecodeError:
-            pass
-    # 3) 最后尝试直接解析全文
-    return json.loads(text)
+    # 去掉 ```json 或 ``` 包裹（提示词要求 LLM 用 code fence 包裹 JSON）
+    _CODE_FENCE_PREFIX_RE = re.compile(r"^```(?:\w+)?\s*\n?", re.IGNORECASE)
+    _CODE_FENCE_SUFFIX_RE = re.compile(r"\n?```\s*$", re.IGNORECASE)
+
+    cleaned = _CODE_FENCE_PREFIX_RE.sub("", text)
+    cleaned = _CODE_FENCE_SUFFIX_RE.sub("", cleaned)
+    return json.loads(cleaned.strip())
 
 
 # 模型预估单价（¥/1M tokens），用于 LiteLLM 无法提供 cost 时的本地估算
@@ -1032,7 +1022,7 @@ def _get_chunk_summary_prompt(transcript_chunk: str, chunk_idx: int, total_chunk
     """构造分块摘要 prompt。"""
     return f"""请分析以下会话记录片段（第 {chunk_idx + 1}/{total_chunks} 块），提取关键信息。
 
-严格基于对话事实，不要猜测。只返回 JSON（不含 markdown 代码块），格式：
+严格基于对话事实，不要猜测。用 ```json ``` 代码块包裹 JSON，格式：
 {{"summary":"这段对话做了什么（一两句话）","key_points":["关键事件或决策1","关键事件或决策2"],"issues":["遇到的问题或踩坑"],"unresolved":["未解决的问题"]}}
 
 对话内容：
@@ -1060,7 +1050,7 @@ def _synthesize_chunks(chunk_results: list[dict], config: dict, session_meta: di
 各片段摘要：
 {chunks_text}
 
-请输出完整 JSON（不含 markdown 代码块），包含：
+请输出完整 JSON（用 ```json ``` 代码块包裹），包含：
 - `complexity`: "simple" 或 "complex"
 - `title`: 描述性标题
 - `tags`: 3-5 个标签
@@ -1123,8 +1113,9 @@ def build_batch_prompt(batch: list[dict], config: dict, existing_categories: lis
     parts.append("- `summary`: 一两句话总结（simple 模式的核心输出）")
     parts.append("- `sections`: complex 时输出章节数组[{heading, content}], simple 时空数组")
     parts.append("")
-    parts.append("严格只返回 JSON 数组（不含 markdown 代码块），顺序与输入一致：")
-    parts.append("```")
+    parts.append("用 ```json ``` 代码块包裹 JSON 数组，顺序与输入一致：")
+    parts.append("")
+    parts.append("```json")
     parts.append("[")
     parts.append(f"  {{\"complexity\":\"...\", \"title\":\"...\", ...}},  // 会话 1")
     parts.append(f"  {{\"complexity\":\"...\", \"title\":\"...\", ...}},  // 会话 2")

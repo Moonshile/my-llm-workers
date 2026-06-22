@@ -27,7 +27,7 @@
 
 ## JSON 输出格式
 
-仅返回 JSON，不要 markdown 代码块，不要其他文字。
+用 ```json ``` 代码块包裹 JSON，不要其他文字。
 
 ### 所有模式必填字段
 - `complexity`: `"simple"` 或 `"complex"`
