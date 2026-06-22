@@ -877,10 +877,22 @@ def call_llm(prompt: str, config: dict, label: str = "") -> dict:
 
     text = response.choices[0].message.content.strip()
 
-    # 尝试提取 JSON（可能被 markdown 代码块包裹）
-    json_match = re.search(r"\{[\s\S]*\}", text)
-    if json_match:
-        return json.loads(json_match.group())
+    # 尝试提取 JSON（优先数组，其次对象，可能被 markdown 代码块包裹）
+    # 1) JSON 数组（批量响应）
+    arr_match = re.search(r"\[[\s\S]*\]", text)
+    if arr_match:
+        try:
+            return json.loads(arr_match.group())
+        except json.JSONDecodeError:
+            pass
+    # 2) JSON 对象（单个响应）
+    obj_match = re.search(r"\{[\s\S]*\}", text)
+    if obj_match:
+        try:
+            return json.loads(obj_match.group())
+        except json.JSONDecodeError:
+            pass
+    # 3) 最后尝试直接解析全文
     return json.loads(text)
 
 
