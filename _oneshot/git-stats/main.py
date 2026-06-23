@@ -770,11 +770,6 @@ def generate_html_report(
     <div class="value purple">{nw_max_count}</div>
     <div class="sub">{nw_max_day}</div>
   </div>
-  <div class="card">
-    <div class="label">非工作高峰时段</div>
-    <div class="value">{nw_peak_hour}:00-{nw_peak_hour + 1}:00</div>
-    <div class="sub">{nw_hourly.get(nw_peak_hour, 0)} 次提交</div>
-  </div>
 </div>"""
 
         # 非工作时间热力图
@@ -982,7 +977,6 @@ def generate_html_report(
     <div class="card"><div class="label">非工作时间提交</div><div class="value orange">{_nw_total}</div><div class="sub">占 {_total} 条的 {_nw_pct:.1f}%</div></div>
     <div class="card"><div class="label">工作时间提交</div><div class="value green">{len(_w)}</div><div class="sub">占 {_total} 条的 {100-_nw_pct:.1f}%</div></div>
     <div class="card"><div class="label">非工作活跃天数</div><div class="value blue">{len(_nw_daily)}</div><div class="sub">日均 {_nw_total/len(_nw_daily):.1f} 次</div></div>
-    <div class="card"><div class="label">非工作高峰时段</div><div class="value">{_nw_peak}:00-{_nw_peak+1}:00</div><div class="sub">{_nw_hourly.get(_nw_peak, 0)} 次提交</div></div>
   </div>
 
   <h2>📊 非工作时间热力图</h2>
