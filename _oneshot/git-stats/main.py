@@ -583,6 +583,12 @@ a:hover{text-decoration:underline}
 .author-tab-btn.active{color:#58a6ff;border-bottom-color:#58a6ff}
 .author-panel{display:none}
 .author-panel.active{display:block}
+.sub-tab-btn{padding:8px 16px;cursor:pointer;color:#8b949e;border-bottom:2px solid transparent;
+             font-size:13px;font-weight:500;background:none;border-left:none;border-right:none;border-top:none}
+.sub-tab-btn:hover{color:#e6edf3}
+.sub-tab-btn.active{color:#f78166;border-bottom-color:#f78166}
+.sub-tab-panel{display:none}
+.sub-tab-panel.active{display:block}
 """
 
 
@@ -890,55 +896,120 @@ def generate_html_report(
             )
 
             hid = f"author-{ai}"
+            sid_all = f"tab-{hid}-all"
+            sid_nw = f"tab-{hid}-nw"
             author_tab_btns += f'<button class="tab-btn" onclick="switchAuthorTab(&#39;{hid}&#39;, this)">{_label}<span class="tag">{_total}</span></button>\n'
+
+            # --- 该作者的非工作时间统计 ---
+            _nw = ad.get("non_working", [])
+            _w = ad.get("working", [])
+            _nw_daily = compute_daily_stats(_nw)
+            _nw_total = len(_nw)
+            _nw_pct = _nw_total / _total * 100 if _total > 0 else 0
+            _nw_hourly = compute_hourly_stats(_nw)
+            _nw_hmax = max(_nw_hourly.values()) if _nw_hourly else 1
+            _nw_peak = max(_nw_hourly, key=_nw_hourly.get) if _nw_hourly else 0
+            _nw_repo = compute_repo_stats(_nw)
+            _nw_repo_max = max(_nw_repo.values()) if _nw_repo else 1
+            _nw_data_json = json.dumps({"daily_stats": _nw_daily, "since": _ad_start, "until": _ad_end}, ensure_ascii=False) if _nw_daily else "null"
+
+            # 非工作时按小时分布
+            _nw_hourly_html = ""
+            for h, cnt in _nw_hourly.items():
+                p = int(cnt / _nw_hmax * 100) if _nw_hmax > 0 else 0
+                emoji = "🌙" if h < 6 else ("🌅" if h < 9 else ("🌙" if h >= 20 else "☀️"))
+                _nw_hourly_html += f'<div class="bar-row"><span class="bar-label">{emoji} {h:02d}:00</span><span class="bar-count">{cnt}</span><div class="bar-track"><div class="bar-fill" style="width:{p}%"></div></div></div>\n'
+
+            _nw_repo_bars = "".join(
+                f'<div class="bar-row repo-bar"><span class="bar-label" title="{r}">{r}</span><span class="bar-count">{c}</span><div class="bar-track"><div class="bar-fill" style="width:{int(c/_nw_repo_max*100)}%"></div></div></div>\n'
+                for r, c in _nw_repo.items()
+            ) if _nw_repo else ""
 
             author_panels += f"""
 <div class="author-panel" id="{hid}">
 <h1><span class="author">{_label}</span> 的提交统计</h1>
 <p class="subtitle">{_ad_start} ~ {_ad_end} &nbsp;·&nbsp; {len(_repo_s)} 个仓库 &nbsp;·&nbsp; 共 {_total} 条提交 &nbsp;·&nbsp; {_ad_td} 天</p>
 
-<div class="cards">
-  <div class="card"><div class="label">总提交</div><div class="value green">{_total}</div><div class="sub">{_ad_td} 天内的提交</div></div>
-  <div class="card"><div class="label">活跃天数</div><div class="value blue">{_active}</div><div class="sub">占 {_ad_td} 天的 {_active/_ad_td*100:.0f}%</div></div>
-  <div class="card"><div class="label">日均 (活跃日)</div><div class="value">{_avg_a:.1f}</div><div class="sub">全部日均 {_avg_d:.1f}</div></div>
-  <div class="card"><div class="label">最高单日</div><div class="value orange">{_max_cnt}</div><div class="sub">{_max_day}</div></div>
-  <div class="card"><div class="label">最长连续</div><div class="value purple">{_streaks["longest"]}</div><div class="sub">{_streaks["longest_range"]}</div></div>
-  <div class="card"><div class="label">当前连续</div><div class="value">{_streaks["current"]}</div><div class="sub">截至数据最新日</div></div>
+<div class="tabs">
+  <button class="sub-tab-btn active" onclick="switchSubTab(&#39;{sid_all}&#39;, this)">📊 全部提交</button>
+  <button class="sub-tab-btn" onclick="switchSubTab(&#39;{sid_nw}&#39;, this)">⏰ 非工作时间<span class="tag">{_nw_pct:.0f}%</span></button>
 </div>
 
-<h2>📊 提交热力图</h2>
-<div class="heatmap-wrapper">
-  <div style="display:flex">
-    <div class="heatmap-day-labels"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span></div>
-    <div>
-      <div class="heatmap-months" id="heatmap-months-{hid}"></div>
-      <div class="heatmap-body" id="heatmap-body-{hid}"></div>
+<div class="sub-tab-panel active" id="{sid_all}">
+  <div class="cards">
+    <div class="card"><div class="label">总提交</div><div class="value green">{_total}</div><div class="sub">{_ad_td} 天内的提交</div></div>
+    <div class="card"><div class="label">活跃天数</div><div class="value blue">{_active}</div><div class="sub">占 {_ad_td} 天的 {_active/_ad_td*100:.0f}%</div></div>
+    <div class="card"><div class="label">日均 (活跃日)</div><div class="value">{_avg_a:.1f}</div><div class="sub">全部日均 {_avg_d:.1f}</div></div>
+    <div class="card"><div class="label">最高单日</div><div class="value orange">{_max_cnt}</div><div class="sub">{_max_day}</div></div>
+    <div class="card"><div class="label">最长连续</div><div class="value purple">{_streaks["longest"]}</div><div class="sub">{_streaks["longest_range"]}</div></div>
+    <div class="card"><div class="label">当前连续</div><div class="value">{_streaks["current"]}</div><div class="sub">截至数据最新日</div></div>
+  </div>
+
+  <h2>📊 提交热力图</h2>
+  <div class="heatmap-wrapper">
+    <div style="display:flex">
+      <div class="heatmap-day-labels"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span></div>
+      <div>
+        <div class="heatmap-months" id="heatmap-months-{hid}"></div>
+        <div class="heatmap-body" id="heatmap-body-{hid}"></div>
+      </div>
+    </div>
+    <div class="heatmap-legend">
+      Less <span class="heatmap-cell cell-0"></span><span class="heatmap-cell cell-1"></span><span class="heatmap-cell cell-2"></span><span class="heatmap-cell cell-3"></span><span class="heatmap-cell cell-4"></span> More
     </div>
   </div>
-  <div class="heatmap-legend">
-    Less <span class="heatmap-cell cell-0"></span><span class="heatmap-cell cell-1"></span><span class="heatmap-cell cell-2"></span><span class="heatmap-cell cell-3"></span><span class="heatmap-cell cell-4"></span> More
+
+  <h2>📦 仓库排行</h2>
+  {_repo_bars}
+
+  <h2>📆 月提交分布</h2>
+  {_month_bars}
+
+  <h2>📅 周提交分布</h2>
+  {_week_bars}
+
+  <h2>📝 最近提交</h2>
+  <div class="scroll-table">
+  <table>
+  <thead><tr><th>SHA</th><th>时间</th><th>仓库</th><th>提交信息</th></tr></thead>
+  <tbody>{_commit_rows}</tbody>
+  </table>
   </div>
 </div>
 
-<h2>📦 仓库排行</h2>
-{_repo_bars}
+<div class="sub-tab-panel" id="{sid_nw}">
+  <div class="cards">
+    <div class="card"><div class="label">非工作时间提交</div><div class="value orange">{_nw_total}</div><div class="sub">占 {_total} 条的 {_nw_pct:.1f}%</div></div>
+    <div class="card"><div class="label">工作时间提交</div><div class="value green">{len(_w)}</div><div class="sub">占 {_total} 条的 {100-_nw_pct:.1f}%</div></div>
+    <div class="card"><div class="label">非工作活跃天数</div><div class="value blue">{len(_nw_daily)}</div><div class="sub">日均 {_nw_total/len(_nw_daily):.1f} 次</div></div>
+    <div class="card"><div class="label">非工作高峰时段</div><div class="value">{_nw_peak}:00-{_nw_peak+1}:00</div><div class="sub">{_nw_hourly.get(_nw_peak, 0)} 次提交</div></div>
+  </div>
 
-<h2>📆 月提交分布</h2>
-{_month_bars}
+  <h2>📊 非工作时间热力图</h2>
+  <div class="heatmap-wrapper">
+    <div style="display:flex">
+      <div class="heatmap-day-labels"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span></div>
+      <div>
+        <div class="heatmap-months" id="heatmap-months-{hid}-nw"></div>
+        <div class="heatmap-body" id="heatmap-body-{hid}-nw"></div>
+      </div>
+    </div>
+    <div class="heatmap-legend">
+      Less <span class="heatmap-cell cell-0"></span><span class="heatmap-cell cell-1"></span><span class="heatmap-cell cell-2"></span><span class="heatmap-cell cell-3"></span><span class="heatmap-cell cell-4"></span> More
+    </div>
+  </div>
 
-<h2>📅 周提交分布</h2>
-{_week_bars}
+  <h2>🕐 按小时分布</h2>
+  {_nw_hourly_html}
 
-<h2>📝 最近提交</h2>
-<div class="scroll-table">
-<table>
-<thead><tr><th>SHA</th><th>时间</th><th>仓库</th><th>提交信息</th></tr></thead>
-<tbody>{_commit_rows}</tbody>
-</table>
+  <h2>📦 非工作时间仓库排行</h2>
+  {_nw_repo_bars}
 </div>
 </div>
 """
             author_heatmap_js += f"renderHeatmap('heatmap-months-{hid}', 'heatmap-body-{hid}', {_data_json});\n"
+            if _nw_daily:
+                author_heatmap_js += f"if ({_nw_data_json}) renderHeatmap('heatmap-months-{hid}-nw', 'heatmap-body-{hid}-nw', {_nw_data_json});\n"
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1087,7 +1158,18 @@ function switchAuthorTab(id, btn) {{
   panel.querySelectorAll('.heatmap-wrapper').forEach(function(w) {{ w.scrollLeft = w.scrollWidth; }});
 }}
 
-// Sub-tab switching
+// Per-author sub-tab switching
+function switchSubTab(id, btn) {{
+  var container = btn.closest('.author-panel');
+  if (!container) return;
+  container.querySelectorAll('.sub-tab-panel').forEach(function(p) {{ p.classList.remove('active'); }});
+  container.querySelectorAll('.sub-tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+  container.querySelector('#' + id).classList.add('active');
+  btn.classList.add('active');
+  container.querySelectorAll('.heatmap-wrapper').forEach(function(w) {{ w.scrollLeft = w.scrollWidth; }});
+}}
+
+// Combined-view sub-tab switching
 function switchTab(id, btn) {{
   document.querySelectorAll('.tab-panel').forEach(function(p) {{ p.classList.remove('active'); }});
   document.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
@@ -1359,6 +1441,7 @@ def main():
         # 每作者详细统计（先按时间排序）
         commits.sort(key=lambda c: c["datetime"], reverse=True)
         ad = compute_daily_stats(commits)
+        w, nw = classify_commits(commits)
         per_author_data.append({
             "label": label,
             "commits": commits,
@@ -1366,6 +1449,8 @@ def main():
             "repo_stats": compute_repo_stats(commits),
             "total_commits": len(commits),
             "streaks": compute_streaks(ad),
+            "working": w,
+            "non_working": nw,
         })
     logger.info(f"合并去重后共 {len(all_commits)} 条提交")
 
