@@ -1,0 +1,6 @@
+.env
+logs/
+__pycache__/
+.pytest_cache/
+report.html
+.rate_cache.json

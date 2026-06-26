@@ -1,0 +1,37 @@
+name: token-stats
+description: 静态分析 Claude Code session 文件，按模型统计 token 消耗并生成 HTML 报告
+language: python
+log_retention_days: 7
+schedule:
+  enabled: false
+run: "uv run python _oneshot/token-stats/main.py"
+
+# 模型单价（/1M tokens），currency 标注计费币种：
+#   cny — 人民币原生计价，无需汇率转换
+#   usd — 美元计价，运行时按实时汇率转为 ¥
+model_pricing:
+  deepseek-v4-pro:
+    currency: cny
+    input: 3.0
+    output: 6.0
+    cache_hit_input: 0.025
+  deepseek-v4-flash:
+    currency: cny
+    input: 1.0
+    output: 2.0
+    cache_hit_input: 0.02
+  claude-opus-4-6:
+    currency: usd
+    input: 5
+    output: 25
+    cache_hit_input: 0.50
+    cache_write_input: 6.25
+  claude-sonnet-4-6:
+    currency: usd
+    input: 3
+    output: 15
+    cache_hit_input: 0.30
+    cache_write_input: 3.75
+
+# 汇率缓存 TTL（秒），默认 4 小时
+rate_cache_ttl: 14400
