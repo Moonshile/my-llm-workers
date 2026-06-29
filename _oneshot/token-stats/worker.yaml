@@ -32,6 +32,12 @@ model_pricing:
     output: 15
     cache_hit_input: 0.30
     cache_write_input: 3.75
+  claude-haiku-4-5-20251001:
+    currency: usd
+    input: 1.00
+    output: 5.00
+    cache_hit_input: 0.10
+    cache_write_input: 1.25
 
 # 汇率缓存 TTL（秒），默认 4 小时
 rate_cache_ttl: 14400

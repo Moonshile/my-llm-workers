@@ -233,9 +233,6 @@ def find_session_files(dirs: list[Path]) -> list[Path]:
             logger.debug("跳过不存在的目录: %s", d)
             continue
         for f in sorted(d.rglob("*.jsonl")):
-            # 跳过子 agent 的 session（在 subagents/ 子目录中）
-            if "subagents" in f.parts:
-                continue
             if str(f) not in seen:
                 seen.add(str(f))
                 files.append(f)
@@ -430,14 +427,12 @@ def parse_sessions(
 def _extract_project_name(filepath: Path) -> str:
     """从文件路径提取项目名（保持编码形式，- 充当路径分隔符）。
 
-    session 文件路径格式:
-      ~/.claude/projects/-Users-name-proj-xxx/<session-id>.jsonl
-
-    项目目录名是把原始绝对路径的 / 替换为 - 得到的。
-    由于原始路径可能含 -，解码不可逆，故保留编码形式。
-    例如 /Users/duankaiqiang/proj/my-llm-workers →
-         -Users-duankaiqiang-proj-my-llm-workers
+    支持主 session 和子 agent：向上查找前缀为 - 的目录作为项目目录。
     """
+    for parent in filepath.parents:
+        if parent.name.startswith("-"):
+            return parent.name[1:]
+    # 兜底：取文件名所在目录
     raw = filepath.parent.name
     if raw.startswith("-"):
         raw = raw[1:]
@@ -738,8 +733,7 @@ new Chart(document.getElementById('pieChart'), {{
     labels: {pie_labels},
     datasets: [{{
       data: {pie_data},
-      backgroundColor: ['#667eea','#f093fb','#4facfe','#43e97b','#fa709a',
-                        '#f6d365','#a18cd1','#f5576c','#36d1dc','#ff9a9e'],
+      backgroundColor: {json.dumps([colors.get(m, "#999") for m in model_stats.keys()])},
     }}]
   }},
   options: {{
@@ -781,11 +775,20 @@ function switchProjTab(idx) {{
 
 
 def _model_colors(models: list[str]) -> dict[str, str]:
-    palette = [
-        "#667eea", "#f093fb", "#4facfe", "#43e97b", "#fa709a",
-        "#f6d365", "#a18cd1", "#f5576c", "#36d1dc", "#ff9a9e",
-    ]
-    return {m: palette[i % len(palette)] for i, m in enumerate(models)}
+    """按模型系列分配颜色：Claude 暖色，DeepSeek 冷色。"""
+    warm = ["#e74c3c", "#f39c12", "#e67e22", "#d35400", "#c0392b", "#f1c40f"]
+    cool = ["#3498db", "#2ecc71", "#1abc9c", "#2980b9", "#27ae60", "#16a085"]
+    result = {}
+    wi = 0
+    ci = 0
+    for m in models:
+        if "claude" in m.lower():
+            result[m] = warm[wi % len(warm)]
+            wi += 1
+        else:
+            result[m] = cool[ci % len(cool)]
+            ci += 1
+    return result
 
 
 def _fmt_num(n: int) -> str:

@@ -59,7 +59,7 @@ def test_find_session_files():
         names = [f.name for f in files]
         assert "a.jsonl" in names
         assert "b.jsonl" in names
-        assert "agent-1.jsonl" not in names  # 子 agent 跳过
+        assert "agent-1.jsonl" in names  # 子 agent 也扫描
 
 
 def test_find_session_files_empty():
