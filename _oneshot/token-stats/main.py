@@ -288,6 +288,7 @@ def parse_sessions(
     """
     model_stats: dict[str, dict] = defaultdict(lambda: defaultdict(int))
     daily_stats: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    hour_of_day_stats: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     project_stats: dict[str, dict] = defaultdict(
         lambda: {"models": defaultdict(lambda: defaultdict(int)), "sessions": []}
     )
@@ -371,6 +372,12 @@ def parse_sessions(
                     # 小时级统计 (YYYY-MM-DDTHH)
                     hour_key = ts_str[:13]
                     daily_stats[hour_key][model] += input_t + output_t
+                    # 按一天中的小时汇总 (0-23)，跨天聚合（UTC→北京时间 +8）
+                    try:
+                        hod = (int(ts_str[11:13]) + 8) % 24
+                        hour_of_day_stats[hod][model] += input_t + output_t
+                    except (ValueError, IndexError):
+                        pass
 
             if session_msg_count > 0:
                 processed_count += 1
@@ -417,6 +424,7 @@ def parse_sessions(
     return {
         "model_stats": dict(model_stats),
         "daily_stats": dict(daily_stats),
+        "hour_of_day_stats": {k: dict(v) for k, v in hour_of_day_stats.items()},
         "project_stats": dict(project_stats),
         "session_list": session_list,
         "processed_session_count": processed_count,
@@ -598,6 +606,22 @@ def generate_html(stats: dict, date_from: date, date_to: date,
                                        model_pricing_display or {}, usd_cny_rate,
                                        proj_name_map)
 
+    # 时段分布数据（按一天中的小时汇总）
+    hod_stats = stats.get("hour_of_day_stats", {})
+    hod_labels = [f"{h:02d}:00" for h in range(24)]
+    hod_datasets = []
+    all_hod_models = sorted(set(m for h in hod_stats.values() for m in h.keys()))
+    hod_colors = _model_colors(all_hod_models)
+    for model in all_hod_models:
+        values = [hod_stats.get(h, {}).get(model, 0) for h in range(24)]
+        hod_datasets.append({
+            "label": model,
+            "data": values,
+            "backgroundColor": hod_colors.get(model, "#999") + "80",
+            "borderColor": hod_colors.get(model, "#999"),
+            "borderWidth": 1,
+        })
+
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -688,6 +712,10 @@ footer {{ text-align: center; color: #aaa; font-size: 12px; margin-top: 30px; pa
     <h3>小时 Token 趋势</h3>
     <canvas id="dailyChart"></canvas>
   </div>
+  <div class="chart-box full">
+    <h3>时段分布（按一天中的小时汇总）</h3>
+    <canvas id="hourOfDayChart" style="max-height:400px"></canvas>
+  </div>
 </div>
 
 <div class="section">
@@ -740,6 +768,25 @@ new Chart(document.getElementById('pieChart'), {{
     responsive: true,
     plugins: {{
       legend: {{ position: 'bottom', labels: {{ padding: 20, usePointStyle: true }} }}
+    }}
+  }}
+}});
+
+// 时段分布柱状图
+new Chart(document.getElementById('hourOfDayChart'), {{
+  type: 'bar',
+  data: {{
+    labels: {json.dumps(hod_labels)},
+    datasets: {json.dumps(hod_datasets)}
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{
+      legend: {{ position: 'bottom', labels: {{ usePointStyle: true }} }}
+    }},
+    scales: {{
+      x: {{ title: {{ display: true, text: '小时' }} }},
+      y: {{ beginAtZero: true, ticks: {{ callback: v => v >= 1000 ? (v/1000).toFixed(0)+'K' : v }} }}
     }}
   }}
 }});
