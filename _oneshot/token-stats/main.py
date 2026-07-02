@@ -307,6 +307,7 @@ def parse_sessions(
 
         session_model_stats: dict[str, dict] = defaultdict(lambda: defaultdict(int))
         session_msg_count = 0
+        seen_msg_ids: set[str] = set()  # 按 message.id 去重
 
         try:
             with open(filepath, "r", encoding="utf-8") as fh:
@@ -321,6 +322,14 @@ def parse_sessions(
 
                     if entry.get("type") != "assistant":
                         continue
+
+                    # 按 message.id 去重（同一 LLM 响应的 thinking/text/tool_use
+                    # 分块各有独立 JSONL 行但携带相同 usage，只计第一次）
+                    msg_id = entry.get("message", {}).get("id", "")
+                    if msg_id and msg_id in seen_msg_ids:
+                        continue
+                    if msg_id:
+                        seen_msg_ids.add(msg_id)
 
                     # 日期过滤
                     ts_str = entry.get("timestamp", "")
