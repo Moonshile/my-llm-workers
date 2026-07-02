@@ -154,8 +154,15 @@ class Dashboard:
             # 更新动画帧
             self.spinner_idx = (self.spinner_idx + 1) % len(SPINNER)
 
-            self._draw()
-            stdscr.refresh()
+            try:
+                self._draw()
+                stdscr.refresh()
+            except Exception:
+                # 单帧渲染失败不崩溃，下一帧重试
+                try:
+                    stdscr.refresh()
+                except Exception:
+                    pass
 
             key = self._safe_getch(stdscr)
 
@@ -239,7 +246,7 @@ class Dashboard:
     def _draw(self):
         if not self.stdscr:
             return
-        self.stdscr.clear()
+        self.stdscr.erase()
         max_y, max_x = self.stdscr.getmaxyx()
         if max_y < 10 or max_x < 60:
             self._write(0, 0, "Terminal too small", curses.A_BOLD)

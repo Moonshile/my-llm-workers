@@ -284,6 +284,8 @@ def main():
         dashboard.run()
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        logger.error("仪表盘异常退出: %s\n%s", e, traceback.format_exc())
     finally:
         shared.running = False
         if scheduled:
