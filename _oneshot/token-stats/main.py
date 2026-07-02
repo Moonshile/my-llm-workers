@@ -307,7 +307,8 @@ def parse_sessions(
 
         session_model_stats: dict[str, dict] = defaultdict(lambda: defaultdict(int))
         session_msg_count = 0
-        seen_msg_ids: set[str] = set()  # 按 message.id 去重
+        # 同 msg_id 的 thinking/text/tool_use 分块合并：先收集再处理
+        merged: dict[str, dict] = {}  # msg_id → {model, ts, ...}
 
         try:
             with open(filepath, "r", encoding="utf-8") as fh:
@@ -323,72 +324,81 @@ def parse_sessions(
                     if entry.get("type") != "assistant":
                         continue
 
-                    # 按 message.id 去重（同一 LLM 响应的 thinking/text/tool_use
-                    # 分块各有独立 JSONL 行但携带相同 usage，只计第一次）
                     msg_id = entry.get("message", {}).get("id", "")
-                    if msg_id and msg_id in seen_msg_ids:
+                    if not msg_id:
                         continue
-                    if msg_id:
-                        seen_msg_ids.add(msg_id)
-
-                    # 日期过滤
-                    ts_str = entry.get("timestamp", "")
-                    if not ts_str:
-                        continue
-                    try:
-                        msg_date = _parse_timestamp_date(ts_str)
-                    except (ValueError, IndexError):
-                        continue
-
-                    if msg_date < date_from or msg_date > date_to:
-                        continue
-
-                    # 提取 token 数据
                     model = entry.get("message", {}).get("model", "unknown")
                     usage = entry.get("message", {}).get("usage", {})
                     if not usage:
                         continue
+                    ts_str = entry.get("timestamp", "")
 
                     input_t = usage.get("input_tokens", 0) or 0
                     output_t = usage.get("output_tokens", 0) or 0
                     cache_read = usage.get("cache_read_input_tokens", 0) or 0
                     cache_create = usage.get("cache_creation_input_tokens", 0) or 0
 
-                    # 跳过无实际 token 消耗的消息（如 <synthetic> 等系统内部消息）
-                    if input_t == 0 and output_t == 0:
-                        continue
+                    if msg_id in merged:
+                        m = merged[msg_id]
+                        m["input_t"] = max(m["input_t"], input_t)
+                        m["output_t"] = max(m["output_t"], output_t)
+                        m["cr"] = max(m["cr"], cache_read)
+                        m["cw"] = max(m["cw"], cache_create)
+                    else:
+                        merged[msg_id] = {
+                            "model": model, "ts_str": ts_str,
+                            "input_t": input_t, "output_t": output_t,
+                            "cr": cache_read, "cw": cache_create,
+                        }
+        except Exception:
+            logger.debug("解析 session 文件失败: %s", filepath, exc_info=True)
+            unmatched_count += 1
+            continue
 
-                    # 聚合到全局 model_stats
-                    ms = model_stats[model]
-                    ms["input_tokens"] += input_t
-                    ms["output_tokens"] += output_t
-                    ms["cache_read_input_tokens"] += cache_read
-                    ms["cache_creation_input_tokens"] += cache_create
-                    ms["total_tokens"] += input_t + output_t
-                    ms["message_count"] += 1
+        # 处理合并后的消息
+        for m in merged.values():
+            try:
+                msg_date = _parse_timestamp_date(m["ts_str"])
+            except (ValueError, IndexError):
+                continue
+            if msg_date < date_from or msg_date > date_to:
+                continue
 
-                    # 聚合到 session 级别
-                    sms = session_model_stats[model]
-                    sms["input_tokens"] += input_t
-                    sms["output_tokens"] += output_t
-                    sms["cache_read_input_tokens"] += cache_read
-                    sms["cache_creation_input_tokens"] += cache_create
-                    sms["total_tokens"] += input_t + output_t
-                    sms["message_count"] += 1
+            model = m["model"]
+            input_t = m["input_t"]
+            output_t = m["output_t"]
+            cache_read = m["cr"]
+            cache_create = m["cw"]
 
-                    session_msg_count += 1
+            if input_t == 0 and output_t == 0:
+                continue
 
-                    # 小时级统计 (YYYY-MM-DDTHH)
-                    hour_key = ts_str[:13]
-                    daily_stats[hour_key][model] += input_t + output_t
-                    # 按一天中的小时汇总 (0-23)，跨天聚合（UTC→北京时间 +8）
-                    try:
-                        hod = (int(ts_str[11:13]) + 8) % 24
-                        hour_of_day_stats[hod][model] += input_t + output_t
-                    except (ValueError, IndexError):
-                        pass
+            ms = model_stats[model]
+            ms["input_tokens"] += input_t
+            ms["output_tokens"] += output_t
+            ms["cache_read_input_tokens"] += cache_read
+            ms["cache_creation_input_tokens"] += cache_create
+            ms["total_tokens"] += input_t + output_t
+            ms["message_count"] += 1
 
-            if session_msg_count > 0:
+            sms = session_model_stats[model]
+            sms["input_tokens"] += input_t
+            sms["output_tokens"] += output_t
+            sms["cache_read_input_tokens"] += cache_read
+            sms["cache_creation_input_tokens"] += cache_create
+            sms["total_tokens"] += input_t + output_t
+            sms["message_count"] += 1
+            session_msg_count += 1
+
+            hour_key = m["ts_str"][:13]
+            daily_stats[hour_key][model] += input_t + output_t
+            try:
+                hod = (int(m["ts_str"][11:13]) + 8) % 24
+                hour_of_day_stats[hod][model] += input_t + output_t
+            except (ValueError, IndexError):
+                pass
+
+        if session_msg_count > 0:
                 processed_count += 1
                 session_total = sum(s["total_tokens"] for s in session_model_stats.values())
                 session_cost = _calc_session_cost(session_model_stats, model_pricing)
@@ -413,12 +423,7 @@ def parse_sessions(
                     "total_tokens": session_total,
                     "estimated_cost": session_cost,
                 })
-            else:
-                if processed_count == 0:
-                    unmatched_count += 1
-
-        except Exception:
-            logger.debug("解析 session 文件失败: %s", filepath, exc_info=True)
+        else:
             unmatched_count += 1
 
     # 初始化 project_stats 的 total 字段

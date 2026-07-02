@@ -106,12 +106,19 @@ def _make_session_file(path: Path, lines: list[dict]):
             f.write(json.dumps(line) + "\n")
 
 
+_msg_counter = 0
+
+
 def _make_assistant(model: str, timestamp: str, input_t: int, output_t: int,
-                    cache_read: int = 0, cache_create: int = 0) -> dict:
+                    cache_read: int = 0, cache_create: int = 0,
+                    msg_id: str = "") -> dict:
+    global _msg_counter
+    _msg_counter += 1
     return {
         "type": "assistant",
         "timestamp": timestamp,
         "message": {
+            "id": msg_id or f"msg_{_msg_counter}",
             "model": model,
             "usage": {
                 "input_tokens": input_t,
@@ -208,6 +215,37 @@ def test_parse_sessions_zero_token_skip():
         ms = stats["model_stats"]
         assert "<synthetic>" not in ms
         assert ms["deepseek-v4-pro"]["message_count"] == 1
+
+
+def test_parse_sessions_merge_duplicate_msg_ids():
+    """同一 msg_id 的多个分块应 merge（取 max）只计一次。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        proj = root / "-Users-test-proj"
+        proj.mkdir()
+        _make_session_file(proj / "s1.jsonl", [
+            _make_assistant("deepseek-v4-pro", "2026-06-15T10:00:00.000Z",
+                            input_t=100, output_t=50, cache_read=1000, cache_create=0,
+                            msg_id="msg-001"),
+            # thinking 分块，相同 msg_id，相同 usage
+            _make_assistant("deepseek-v4-pro", "2026-06-15T10:00:00.000Z",
+                            input_t=100, output_t=50, cache_read=1000, cache_create=0,
+                            msg_id="msg-001"),
+            # 不同 msg_id，正常计入
+            _make_assistant("deepseek-v4-pro", "2026-06-15T11:00:00.000Z",
+                            input_t=200, output_t=100,
+                            msg_id="msg-002"),
+        ])
+        files = main.find_session_files([root])
+        stats = main.parse_sessions(
+            files, date.fromisoformat("2026-06-01"), date.fromisoformat("2026-06-30"),
+            session_names={}, model_pricing={},
+        )
+        ms = stats["model_stats"]
+        assert ms["deepseek-v4-pro"]["message_count"] == 2  # msg-001 merged, msg-002 separate
+        assert ms["deepseek-v4-pro"]["input_tokens"] == 300  # 100 + 200
+        assert ms["deepseek-v4-pro"]["output_tokens"] == 150  # 50 + 100
+        assert ms["deepseek-v4-pro"]["cache_read_input_tokens"] == 1000  # merged max
 
 
 def test_parse_sessions_empty():
